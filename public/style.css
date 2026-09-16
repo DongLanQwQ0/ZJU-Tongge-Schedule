@@ -640,6 +640,9 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .list > *:nth-child(n+9) { animation-delay: .24s; }
 /* 边打字边筛的列表要关掉：每敲一个字整列表重排一遍入场动画，很烦 */
 .no-anim > * { animation: none !important; }
+/* 加载中的转圈不能被上面的入场动画盖掉（.list > * 和 .spinner 权重一样，
+   谁写在后面谁赢）。这条权重更高，稳赢。 */
+.list > .spinner { animation: pulse 1.3s ease-in-out infinite; }
 
 /* 弹窗：背景淡入 + 内容弹一下。closing 是关的那一下，
    选择器权重压过打开时的规则，所以不用 !important。 */
