@@ -34,6 +34,71 @@
 
     // ------------------------------------------------------------ 通用弹窗
 
+    /**
+     * 一次性强调：把 class 摘掉、强制重排、再加回来，动画才会重跑。
+     * 不去掉直接重加是不行的 —— 浏览器认为 class 没变，不会重新播。
+     */
+    function bump(el, cls) {
+        if (!el) return;
+        var c = cls || 'bump';
+        el.classList.remove(c);
+        void el.offsetWidth;      // 强制重排，动画状态机归零
+        el.classList.add(c);
+        setTimeout(function () { el.classList.remove(c); }, 600);
+    }
+
+    /**
+     * 关弹窗：先播一段淡出再真正 hidden，和打开时的弹入对称。
+     *
+     * 用 animationend 收尾 + 超时兜底。兜底是必须的：系统开了「减弱动态效果」
+     * 或者动画被别处禁掉时，animationend 可能不来，没有兜底弹窗就永远关不掉。
+     */
+    function closeModal(el) {
+        if (!el || el.hidden) return;
+        el.classList.add('closing');
+        var done = false;
+        function fin() {
+            if (done) return;
+            done = true;
+            el.removeEventListener('animationend', fin);
+            el.classList.remove('closing');
+            el.hidden = true;
+        }
+        el.addEventListener('animationend', fin);
+        setTimeout(fin, 220);
+    }
+
+    /** 动态创建的弹窗用完要整个摘掉，同样先淡出 */
+    function dismiss(modal) {
+        modal.classList.add('closing');
+        var done = false;
+        function fin() {
+            if (done) return;
+            done = true;
+            if (modal.parentNode) modal.parentNode.removeChild(modal);
+        }
+        modal.addEventListener('animationend', fin);
+        setTimeout(fin, 220);
+    }
+
+    /**
+     * 数字滚动。管理页那几个统计数字如果直接跳变，很容易看漏；
+     * 让它从旧值数到新值，眼睛能跟上。
+     */
+    function countUp(el, to) {
+        var from = Number(el.getAttribute('data-v') || 0);
+        el.setAttribute('data-v', String(to));
+        if (from === to) { el.textContent = String(to); return; }
+        var t0 = performance.now();
+        var dur = 420;
+        (function step(t) {
+            var k = Math.min(1, (t - t0) / dur);
+            var eased = 1 - Math.pow(1 - k, 3);        // easeOutCubic
+            el.textContent = String(Math.round(from + (to - from) * eased));
+            if (k < 1) requestAnimationFrame(step);
+        })(t0);
+    }
+
     function askText(opts) {
         return new Promise(function (resolve) {
             var modal = document.createElement('div');
@@ -59,7 +124,7 @@
             if (opts.value) input.value = opts.value;
 
             function done(val) {
-                document.body.removeChild(modal);
+                dismiss(modal);
                 resolve(val);
             }
             modal.addEventListener('click', function (e) {
@@ -100,8 +165,8 @@
             $('[data-x=ok]', modal).textContent = okText || '确定';
             modal.addEventListener('click', function (e) {
                 var x = e.target.getAttribute && e.target.getAttribute('data-x');
-                if (x === 'cancel') { document.body.removeChild(modal); resolve(false); }
-                if (x === 'ok') { document.body.removeChild(modal); resolve(true); }
+                if (x === 'cancel') { dismiss(modal); resolve(false); }
+                if (x === 'ok') { dismiss(modal); resolve(true); }
             });
             document.body.appendChild(modal);
         });
@@ -400,7 +465,8 @@
         admin_grant_cli: '授予管理员（命令行）',
         admin_revoke_cli: '撤销管理员（命令行）',
         admin_delete_user: '删除账号',
-        admin_delete_group: '解散群组'
+        admin_delete_group: '解散群组',
+        admin_reset_password: '重置密码'
     };
 
     /** 审计日志一行的说明文字，只挑存在的字段拼 */
@@ -487,8 +553,15 @@
             ['待复核', a.stats.suspectCount],
             ['待清理', a.stats.dormantCount]
         ].map(function (p) {
-            return '<div class="stat"><b>' + p[1] + '</b><span>' + p[0] + '</span></div>';
+            return '<div class="stat"><b data-v="0">0</b><span>' + p[0] + '</span></div>';
         }).join('');
+        // 数字从旧值滚到新值，眼睛能跟上变化
+        $$('#admin-stats .stat b').forEach(function (el, i) {
+            countUp(el, [
+                a.stats.userCount, a.stats.adminCount, a.stats.courseUploaded,
+                a.stats.groupCount, a.stats.suspectCount, a.stats.dormantCount
+            ][i]);
+        });
 
         $('#admin-user-count').textContent = a.users.length + ' 个';
         $('#admin-group-count').textContent = a.groups.length + ' 个';
@@ -548,6 +621,8 @@
         $('#admin-users').innerHTML = users.length
             ? users.map(adminUserRow).join('')
             : '<div class="empty">没有匹配的账号</div>';
+        // 边打字边筛的时候别让整个列表重播入场动画
+        $('#admin-users').classList.toggle('no-anim', !!q);
     }
 
     /**
@@ -669,7 +744,7 @@
                     return;
                 }
                 if (x === 'ok') {
-                    document.body.removeChild(modal);
+                    dismiss(modal);
                     resolve(true);
                 }
             });
@@ -700,8 +775,12 @@
         var txt = n ? ('已上传 ' + n + ' 个时段') : '未上传';
         $('#home-course-status').textContent = txt;
         var badge = $('#home-badge');
-        badge.textContent = n ? ('已解析 ' + n + ' 个时段') : '未上传';
+        var badgeTxt = n ? ('已解析 ' + n + ' 个时段') : '未上传';
+        // 只有数字真的变了才弹一下。每次回首页都弹就成了骚扰
+        var changed = badge.textContent !== badgeTxt;
+        badge.textContent = badgeTxt;
         badge.className = 'badge' + (n ? ' ok' : '');
+        if (changed && n) bump(badge);
         $('#home-drop-text').textContent = n ? '点击替换 .ics 课表文件' : '点击选择 .ics / .txt 课表文件';
         $('#home-account-name').textContent = state.me ? state.me.nickname : '';
         // 管理入口只给超级用户看；服务端每个 /api/admin/* 还会再查一次身份
@@ -715,7 +794,8 @@
             state.me = await API.me();
             toast('课表已更新：' + stored.length + ' 个时段');
             if (badgeEl) { badgeEl.textContent = '已解析 ' + stored.length + ' 个时段'; badgeEl.className = 'badge ok'; }
-            if (dropEl) dropEl.classList.add('active');
+            if (dropEl) { dropEl.classList.add('active'); bump(dropEl, 'ring'); }
+            if (badgeEl) bump(badgeEl);
             renderCourseStatus();
             if (state.group) await openGroup(state.group.code, true);
             return true;
@@ -1412,9 +1492,9 @@
             });
         });
         $('#btn-zoom-qr').addEventListener('click', zoomQr);
-        $('#qr-modal-close').addEventListener('click', function () { $('#qr-modal').hidden = true; });
+        $('#qr-modal-close').addEventListener('click', function () { closeModal($('#qr-modal')); });
         $('#qr-modal').addEventListener('click', function (e) {
-            if (e.target === $('#qr-modal')) $('#qr-modal').hidden = true;
+            if (e.target === $('#qr-modal')) closeModal($('#qr-modal'));
         });
 
         $('#btn-group-upload').addEventListener('click', function () { $('#group-file').click(); });
@@ -1768,17 +1848,17 @@
         });
         window.addEventListener('keydown', function (e) {
             if (e.key === 'Escape') {
-                $$('.modal').forEach(function (m) { m.hidden = true; });
+                $$('.modal').forEach(function (m) { closeModal(m); });
             }
         });
 
         $$('.js-ics-help').forEach(function (b) {
             b.addEventListener('click', function () { $('#ics-modal').hidden = false; });
         });
-        $('#ics-modal-close').addEventListener('click', function () { $('#ics-modal').hidden = true; });
+        $('#ics-modal-close').addEventListener('click', function () { closeModal($('#ics-modal')); });
         // 点遮罩空白处也能关掉
         $$('.modal').forEach(function (m) {
-            m.addEventListener('click', function (e) { if (e.target === m) m.hidden = true; });
+            m.addEventListener('click', function (e) { if (e.target === m) closeModal(m); });
         });
         API.onUnauthorized(function () {
             state.me = null;
@@ -1909,7 +1989,7 @@
 
     function initBeta() {
         $('#beta-owner').textContent = config.owner || '发起人';
-        $('#beta-close').addEventListener('click', function () { $('#beta-modal').hidden = true; });
+        $('#beta-close').addEventListener('click', function () { closeModal($('#beta-modal')); });
     }
 
     async function boot() {

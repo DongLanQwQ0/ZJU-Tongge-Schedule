@@ -573,6 +573,7 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
  */
 
 @keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes fade-out { from { opacity: 1 } to { opacity: 0 } }
 @keyframes rise-in {
     from { opacity: 0; transform: translateY(6px); }
     to   { opacity: 1; transform: none; }
@@ -581,7 +582,32 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
     from { opacity: 0; transform: scale(.94); }
     to   { opacity: 1; transform: none; }
 }
+@keyframes pop-out {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: scale(.96); }
+}
 @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .4 } }
+/* 列表行：位移比卡片小一点，行数多，幅度大了会晃眼 */
+@keyframes stagger-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: none; }
+}
+/* 周次胶囊换选时轻轻弹一下，让人确认「点中了」 */
+@keyframes chip-pop {
+    from { transform: scale(.92); }
+    to   { transform: none; }
+}
+/* 数字/徽章变化时的一次性强调，靠 JS 重新加 class 触发 */
+@keyframes bump {
+    0%   { transform: scale(1); }
+    45%  { transform: scale(1.12); }
+    100% { transform: scale(1); }
+}
+/* 上传成功时框子亮一下 */
+@keyframes ring {
+    0%   { box-shadow: 0 0 0 0 rgba(0, 122, 255, .35); }
+    100% { box-shadow: 0 0 0 12px rgba(0, 122, 255, 0); }
+}
 
 /* 切页 */
 .screen.active { animation: fade-in .18s ease-out backwards; }
@@ -594,23 +620,53 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .screen.active .card:nth-of-type(2) { animation-delay: .04s; }
 .screen.active .card:nth-of-type(3) { animation-delay: .08s; }
 .screen.active .card:nth-of-type(4) { animation-delay: .12s; }
+.screen.active .card:nth-of-type(5) { animation-delay: .16s; }
+.screen.active .card:nth-of-type(6) { animation-delay: .20s; }
 
-/* 弹窗：背景淡入 + 内容弹一下 */
+/* 提示条（本周无课、某方没传课表之类）浮出来，别凭空出现 */
+.notice { animation: rise-in .2s ease-out backwards; }
+
+/* 列表逐行入场。只给前 8 行排队：成员上限 50 人，让第 30 行等 0.8 秒
+   才出现毫无意义，反而显得卡。第 9 行起统一在 0.24s 一起出来。 */
+.list > * { animation: stagger-in .2s ease-out backwards; }
+.list > *:nth-child(1) { animation-delay: .00s; }
+.list > *:nth-child(2) { animation-delay: .03s; }
+.list > *:nth-child(3) { animation-delay: .06s; }
+.list > *:nth-child(4) { animation-delay: .09s; }
+.list > *:nth-child(5) { animation-delay: .12s; }
+.list > *:nth-child(6) { animation-delay: .15s; }
+.list > *:nth-child(7) { animation-delay: .18s; }
+.list > *:nth-child(8) { animation-delay: .21s; }
+.list > *:nth-child(n+9) { animation-delay: .24s; }
+/* 边打字边筛的列表要关掉：每敲一个字整列表重排一遍入场动画，很烦 */
+.no-anim > * { animation: none !important; }
+
+/* 弹窗：背景淡入 + 内容弹一下。closing 是关的那一下，
+   选择器权重压过打开时的规则，所以不用 !important。 */
 .modal { animation: fade-in .16s ease-out backwards; }
 .modal .inner { animation: pop-in .22s cubic-bezier(.2, .9, .3, 1.25) backwards; }
+.modal.closing { animation: fade-out .15s ease-in forwards; }
+.modal.closing .inner { animation: pop-out .15s ease-in forwards; }
 
 /* 课表容器出现（本地比对页是解除 hidden 时才跑） */
 .grid-wrap { animation: fade-in .22s ease-out backwards; }
 
 .spinner { animation: pulse 1.3s ease-in-out infinite; }
 
+/* 一次性强调，由 JS 重新加 class 触发 */
+.bump { animation: bump .3s ease-out; }
+.ring { animation: ring .5s ease-out; }
+.weeks button.on { animation: chip-pop .18s ease-out; }
+
 /* 按下的手感 */
-.btn, .icon-btn, .weeks button, .item, .row-remove, .segmented button {
+.btn, .icon-btn, .weeks button, .item, .row-remove, .row-note, .row-self-note,
+.row-ok, .row-no, .segmented button {
     transition: transform .12s ease, background-color .16s ease,
                 color .16s ease, opacity .16s ease, border-color .16s ease;
 }
 .btn:active, .icon-btn:active, .weeks button:active,
-.row-remove:active, .segmented button:active { transform: scale(.97); }
+.row-remove:active, .row-note:active, .row-self-note:active,
+.row-ok:active, .row-no:active, .segmented button:active { transform: scale(.97); }
 .item[data-member]:active { transform: scale(.995); }
 
 /* 导出保险丝 —— 必须留在所有动效规则之后。
