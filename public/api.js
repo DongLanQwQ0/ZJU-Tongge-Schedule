@@ -137,6 +137,25 @@
         },
 
         createGroup: function (name) { return request('/api/groups', 'POST', { name: name }); },
+        // 换掉群自己的码（旧链接全部失效）
+        rotateGroupCode: function (code) { return request('/api/groups/' + code + '/rotate-code', 'POST', {}); },
+        // 发一枚新的邀请链接；ttl 取 '1d' / '3d' / '7d' / '30d' / 'never'
+        addInvite: function (code, ttl, label) {
+            return request('/api/groups/' + code + '/invites', 'POST', { ttl: ttl, label: label });
+        },
+        // 作废某一枚邀请链接；想「作废并重发」就传 issueNew
+        revokeInvite: function (code, inviteCode, opts) {
+            return request('/api/groups/' + code + '/invites/' + inviteCode, 'DELETE',
+                Object.assign({ issueNew: false }, opts || {}));
+        },
+        // 批量作废（管理页多选）
+        revokeInvites: function (code, codes) {
+            return request('/api/groups/' + code + '/invites/revoke', 'POST', { codes: codes });
+        },
+        // 彻底删掉一条已作废/已过期的记录
+        purgeInvite: function (code, inviteCode) {
+            return request('/api/groups/' + code + '/invites/' + inviteCode + '/purge', 'DELETE', {});
+        },
         joinGroup: function (code) { return request('/api/groups/' + code + '/join', 'POST', {}); },
         groupDetail: function (code) { return request('/api/groups/' + code); },
         groupSettings: function (code, patch) { return request('/api/groups/' + code + '/settings', 'PUT', patch); },

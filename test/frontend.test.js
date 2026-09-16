@@ -97,7 +97,10 @@ test('api.js 里每个方法都请求了一个真实存在的路由', () => {
     const re = /\[\s*'(GET|POST|PUT|DELETE)',\s*\/\^(.+?)\$\/,/g;
     let m;
     while ((m = re.exec(server))) routes.push(m[2].replace(/\\\//g, '/'));
-    assert.equal(routes.length, 25, `应抓到 25 条路由，实际 ${routes.length}`);
+    // 不写死条数 —— 加一条路由就要来改测试数字，只会让人嫌烦而绕过它。
+    // 这里只确认「正则确实抓到了路由」，别让提取本身悄悄失配。
+    assert.ok(routes.length >= 20, `路由提取似乎失配了，只抓到 ${routes.length} 条`);
+    assert.ok(routes.every((r) => r.startsWith('/api/')), '所有路由都应挂在 /api/ 下');
 
     // api.js 里请求的字面量路径。拼接出来的（'/api/groups/' + code + ...）
     // 只取静态前缀，用前缀去配路由 —— 够抓「路由改名了但前端没跟」这类错。

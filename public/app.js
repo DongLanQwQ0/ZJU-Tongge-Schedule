@@ -184,7 +184,10 @@
         local: { a: [], b: [], nameA: '', nameB: '', weekIndex: null },
         currentWindow: null,
         admin: null,
-        screen: null
+        screen: null,
+        // 当前邀请卡片里展示的是哪一枚码。null = 群主自己的永久码
+        activeInvite: null,
+        newInviteTtl: 'never'
     };
 
     function qs(name) {
@@ -256,6 +259,11 @@
         }
         if (id === 'group') {
             if (state.group) return openGroup(state.group.code);
+            return fallbackHome();
+        }
+        if (id === 'invites') {
+            // 返回手势落到邀请页时，群数据可能还在但已被解散
+            if (state.group && state.group.isCreator) return openInvites();
             return fallbackHome();
         }
         if (id === 'compare') {
@@ -999,6 +1007,16 @@
         }
     }
 
+    /**
+     * 只把群组数据重新拉一遍再重画，不走 show()。
+     * 新增/作废邀请码后用这个：不闪屏、不重置已选周次，用户感觉是「就地更新」。
+     */
+    async function reloadGroup() {
+        if (!state.group) return;
+        state.group = await API.groupDetail(state.group.code);
+        renderGroup();
+    }
+
     var uploadBusy = false;
 
     function memberHasMe(m) { return state.me && m.id === state.me.id; }
@@ -1134,12 +1152,47 @@
         }
         var monday = win.baseMonday ? weeks.mondayOfWeek(win.baseMonday, state.weekIndex) : null;
 
-        $('#group-code').textContent = g.code;
-        // 群名节点里还挂着「改名」按钮，只替换前面的文字节点
         $('#group-name').firstChild.nodeValue = g.name;
         $('#btn-rename-group').hidden = !iAmOwner;
         renderUploadHint();
         $('#btn-group-delete').hidden = !iAmOwner;
+
+        // 邀请卡片：展示哪一枚码、有没有可用的码，都在这里定
+        var disp = currentDisplayCode();
+        var codeEl = $('#group-code');
+        var noteEl = $('#group-current-note');
+        var qrBox = $('#group-qr');
+        var urlEl = $('#group-url');
+        var canShare = !!disp;
+
+        // 分享按钮在没有可用码时必须禁用 —— 否则用户会复制出一个打不开的链接
+        ['#btn-copy-code', '#btn-copy-link', '#btn-zoom-qr'].forEach(function (sel) {
+            var b = $(sel);
+            if (b) b.disabled = !canShare;
+        });
+
+        if (disp) {
+            codeEl.textContent = disp.code;
+            urlEl.hidden = false;
+            renderQr(disp.code);
+            // 讲清楚这个码是谁的、还能用多久
+            if (disp.isOwnerCode) {
+                noteEl.textContent = '这是你自己的永久码，永不过期。发给同学的码在「管理邀请链接」里。';
+            } else if (disp.invite.expiresAt == null) {
+                noteEl.textContent = '这条链接永久有效。';
+            } else {
+                noteEl.textContent = '这条链接' + inviteStateText(disp.invite) + '。';
+            }
+        } else {
+            // 没有可用码：多半是群主发的链接都过期/作废了
+            codeEl.textContent = '——';
+            noteEl.textContent = '现在没有能用的邀请链接了。';
+            urlEl.hidden = true;
+            qrBox.innerHTML = '<div class="tiny">没有可用的邀请链接</div>';
+        }
+        // 管理入口只有群主看得到；成员在邀请卡片上就能拿到能用的码
+        $('#btn-manage-invites').hidden = !iAmOwner;
+
 
         var notice = $('#group-notice');
         if (state.fellBack) {
@@ -1159,8 +1212,7 @@
         });
 
         // 二维码与邀请码必须在「还没上传课表」时也能看到 —— 刚建完群正是这个状态，
-        // 所以这一步要放在下面的早退分支之前。
-        renderQr(g.code);
+        // 所以上面的邀请卡片渲染放在这些早退分支之前。
 
         renderGroupSettings(g, iAmOwner);
         renderRequests(g, iAmOwner);
@@ -1235,8 +1287,6 @@
                 removeMemberById(btn.getAttribute('data-remove'));
             });
         });
-
-        renderQr(g.code);
     }
 
     /** 群组设置（只有群主看得到） */
@@ -1358,7 +1408,6 @@
 
     // ------------------------------------------------------------ 二维码
 
-    var SHARE_KEY = 'dsh_share_origin';
     var metaCache = null;
 
     async function shareCandidates() {
@@ -1368,19 +1417,330 @@
         return metaCache.lanUrls || [];
     }
 
+    /**
+     * 二维码/链接里该用哪个地址。
+     *
+     * 自己用 localhost 打开时必须换成局域网地址，否则同学扫了打不开。
+     * 服务端返回的 lanUrls 已经排过序（虚拟网卡在后），直接取第一个就行 ——
+     * 以前这里还挂了一排「换一个地址试试」的按钮，纯属多余：
+     * 正常人就该拿到第一个可用地址，给一排按钮只会让人不知道该点哪个。
+     */
     async function joinOrigin() {
-        // 自己用 localhost 打开时，二维码里必须是局域网地址，否则同学扫了打不开
         if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
             return location.origin;
         }
         var list = await shareCandidates();
-        var chosen = Store.get(SHARE_KEY);
-        if (chosen && list.indexOf(chosen) >= 0) return chosen;
         return list[0] || location.origin;
     }
 
     async function joinUrl(code) {
         return (await joinOrigin()) + '/?code=' + code;
+    }
+
+    // -------------------------------------------------------- 邀请链接（可多枚、可过期）
+
+    /** 剩余时间说人话：不显示「还剩 86399000 毫秒」这种 */
+    function fmtRemaining(ms) {
+        if (ms == null) return '';
+        if (ms <= 0) return '已过期';
+        var m = Math.floor(ms / 60000);
+        if (m < 60) return '还剩 ' + Math.max(1, m) + ' 分钟';
+        var h = Math.floor(m / 60);
+        if (h < 24) return '还剩 ' + h + ' 小时';
+        return '还剩 ' + Math.floor(h / 24) + ' 天';
+    }
+
+    /** 一枚码现在的状态，一句话讲清「能不能用、为什么」 */
+    function inviteStateText(inv) {
+        if (inv.revoked) return '已作废';
+        if (inv.expired) return '已过期';
+        if (inv.expiresAt == null) return '永久有效';
+        return fmtRemaining(inv.remainingMs) + '（' + fmtTime(inv.expiresAt) + ' 到期）';
+    }
+
+    function inviteStateClass(inv) {
+        return inv.active ? 'chip-lv same' : 'chip-lv cross';
+    }
+
+    /** 能用的码，越新越靠前；群主自己的永久码单独走 ownerCode */
+    function activeInvites() {
+        var g = state.group;
+        if (!g || !g.invites) return [];
+        return g.invites.filter(function (i) { return i.active; });
+    }
+
+    /**
+     * 决定邀请卡片上该展示哪一枚码：
+     *  1. 用户手动选过的（state.activeInvite）
+     *  2. 还能用的里面最新的那枚
+     *  3. 群主自己的永久码（老群没有 invites，全靠它）
+     *  4. 都没有 -> null，卡片改成提示「让群主要个新链接」
+     */
+    function currentInvite() {
+        var g = state.group;
+        if (!g) return null;
+        var list = activeInvites();
+        if (state.activeInvite) {
+            var picked = list.filter(function (i) { return i.code === state.activeInvite; })[0];
+            if (picked) return picked;
+            state.activeInvite = null;
+        }
+        if (list.length) return list[0];
+        return null;
+    }
+
+    /**
+     * 邀请卡片上那个码是什么。
+     * @returns {{code:string, invite:object|null, isOwnerCode:boolean}|null}
+     */
+    function currentDisplayCode() {
+        var g = state.group;
+        if (!g) return null;
+        var inv = currentInvite();
+        if (inv) return { code: inv.code, invite: inv, isOwnerCode: false };
+        // 没有可用的邀请码了：群主退回自己的永久码，成员就只能求助群主
+        if (g.isCreator && g.ownerCode) {
+            return { code: g.ownerCode, invite: null, isOwnerCode: true };
+        }
+        return null;
+    }
+
+    // -------------------------------------------------------- 邀请链接管理页
+
+    /** 群里所有邀请记录，按创建时间倒序 */
+    function inviteList() {
+        var g = state.group;
+        return (g && g.invites) ? g.invites.slice().sort(function (a, b) {
+            return (b.createdAt || 0) - (a.createdAt || 0);
+        }) : [];
+    }
+
+    function inviteRowHtml(inv, mode) {
+        // 有效链接：能展示、能作废，还能勾选批量作废
+        if (mode === 'active') {
+            return '<div class="item admin-row">' +
+                '<label class="inv-pick"><input type="checkbox" data-pick="' + esc(inv.code) + '"></label>' +
+                '<div class="grow">' +
+                '<div class="title mono">' + esc(inv.code) +
+                (inv.label ? ' <span class="sub">' + esc(inv.label) + '</span>' : '') + '</div>' +
+                '<div class="sub">' + esc(inviteStateText(inv)) + ' · 建于 ' + fmtTime(inv.createdAt) + '</div>' +
+                '</div>' +
+                '<div class="row-acts">' +
+                '<button class="row-note" data-use="' + esc(inv.code) + '">展示</button>' +
+                '<button class="row-remove" data-revoke="' + esc(inv.code) + '">作废</button>' +
+                '</div></div>';
+        }
+        // 已失效：只读，但可以彻底删掉（前提是已经失效）
+        return '<div class="item admin-row">' +
+            '<div class="grow">' +
+            '<div class="title mono">' + esc(inv.code) +
+            (inv.label ? ' <span class="sub">' + esc(inv.label) + '</span>' : '') + '</div>' +
+            '<div class="sub">' + esc(inviteStateText(inv)) + ' · 建于 ' + fmtTime(inv.createdAt) + '</div>' +
+            '<div class="overlap"><span class="' + inviteStateClass(inv) + '">' +
+            (inv.revoked ? '已作废' : '已过期') + '</span></div>' +
+            '</div>' +
+            '<div class="row-acts">' +
+            '<button class="row-remove" data-purge="' + esc(inv.code) + '">删除</button>' +
+            '</div></div>';
+    }
+
+    function renderManageInvites() {
+        var g = state.group;
+        if (!g) return;
+
+        var all = inviteList();
+        var live = all.filter(function (i) { return i.active; });
+        var dead = all.filter(function (i) { return !i.active; });
+
+        var ownerCodeEl = $('#inv-owner-code');
+        if (ownerCodeEl) ownerCodeEl.textContent = g.ownerCode || g.code;
+
+        // ---- 有效链接 ----
+        var countEl = $('#inv-count');
+        if (countEl) countEl.textContent = live.length + ' 条';
+        var box = $('#inv-active-list');
+        box.innerHTML = live.length
+            ? live.map(function (i) { return inviteRowHtml(i, 'active'); }).join('')
+            : '<div class="empty">还没有有效的邀请链接，下面发一条吧</div>';
+
+        // 批量作废那一条只在有多条时才出现，免得零碎
+        $('#inv-bulk-bar').hidden = live.length < 2;
+
+        $$('#inv-active-list [data-use]').forEach(function (b) {
+            b.addEventListener('click', function () { useInvite(b.getAttribute('data-use')); });
+        });
+        $$('#inv-active-list [data-revoke]').forEach(function (b) {
+            b.addEventListener('click', function () { revokeInvite(b.getAttribute('data-revoke')); });
+        });
+
+        // ---- 已失效存档 ----
+        var hbox = $('#inv-history-list');
+        hbox.innerHTML = dead.length
+            ? dead.map(function (i) { return inviteRowHtml(i, 'dead'); }).join('')
+            : '<div class="empty">没有失效的记录</div>';
+        $$('#inv-history-list [data-purge]').forEach(function (b) {
+            b.addEventListener('click', function () { purgeInvite(b.getAttribute('data-purge')); });
+        });
+
+        syncInviteBulk();
+    }
+
+    /** 批量作废栏：全选框与按钮的可用状态跟着勾选走 */
+    function syncInviteBulk() {
+        var picks = $$('#inv-active-list [data-pick]');
+        var btn = $('#btn-inv-revoke-selected');
+        if (!btn) return;
+        var chosen = picks.filter(function (p) { return p.checked; });
+        btn.disabled = !chosen.length;
+        btn.textContent = chosen.length ? '作废选中的 ' + chosen.length + ' 条' : '作废选中的';
+        var allBox = $('#btn-inv-selectall');
+        if (allBox) {
+            allBox.textContent = (picks.length && chosen.length === picks.length) ? '取消全选' : '全选';
+        }
+    }
+
+    /** 把某条链接设为群组页上展示/分享的那条 */
+    function useInvite(code) {
+        state.activeInvite = code;
+        show('group', { title: '群组', back: goHome, replace: true });
+        renderGroup();
+        toast('已切到 ' + code + '，群组页上分享的就是它');
+    }
+
+    /**
+     * 换掉群自己的码：以前发出去的所有链接一起失效。
+     *
+     * 为什么要有这个按钮：改版前建的群码是 6 位（10⁶ 空间），配 20 次/分钟的
+     * 限流，枚举完只要一个多月。换掉之后就是 8 位，代价是老链接全废。
+     */
+    async function rotateGroupCode() {
+        var g = state.group;
+        if (!g) return;
+        var ok = await askConfirm(
+            '换掉群自己的码',
+            '现在这个码 ' + g.code + ' 会立刻作废，以前发出去的所有链接都会失效，' +
+            '需要你把新码重新发给还没进群的同学。已经进群的人不受影响。',
+            '换新的'
+        );
+        if (!ok) return;
+        try {
+            var r = await API.rotateGroupCode(g.code);
+            state.activeInvite = null;
+            // 群码变了：整页按新码重新打开
+            await openGroup(r.code);
+            toast('已换成新码：' + r.code + '，请重新发给同学');
+        } catch (e) { toast(e.message, true); }
+    }
+
+    async function generateInvite() {
+        var g = state.group;
+        if (!g) return;
+        var label = ($('#inv-label') && $('#inv-label').value.trim()) || '';
+        try {
+            var r = await API.addInvite(g.code, state.newInviteTtl, label);
+            if ($('#inv-label')) $('#inv-label').value = '';
+            state.activeInvite = r.invite.code;
+            await reloadGroup();
+            renderManageInvites();
+            toast('新链接已生成：' + r.invite.code);
+        } catch (e) { toast(e.message, true); }
+    }
+
+    async function revokeInvite(inviteCode) {
+        var g = state.group;
+        if (!g) return;
+        var ok = await askConfirm(
+            '作废这条邀请链接',
+            '作废后 ' + inviteCode + ' 就不能再进群了。已经进群的人不受影响，' +
+            '但如果还有同学没进来，得重新发一条给 TA。',
+            '作废'
+        );
+        if (!ok) return;
+        try {
+            await API.revokeInvite(g.code, inviteCode);
+            if (state.activeInvite === inviteCode) state.activeInvite = null;
+            await reloadGroup();
+            renderManageInvites();
+            toast('已作废 ' + inviteCode);
+        } catch (e) { toast(e.message, true); }
+    }
+
+    async function revokeSelectedInvites() {
+        var g = state.group;
+        if (!g) return;
+        var codes = $$('#inv-active-list [data-pick]')
+            .filter(function (p) { return p.checked; })
+            .map(function (p) { return p.getAttribute('data-pick'); });
+        if (!codes.length) return;
+        var ok = await askConfirm(
+            '作废 ' + codes.length + ' 条链接',
+            codes.join('、') + ' 都会立刻失效，新人进不来。' +
+            '已经在群里的人不受影响。',
+            '全部作废'
+        );
+        if (!ok) return;
+        try {
+            var r = await API.revokeInvites(g.code, codes);
+            codes.forEach(function (c) { if (state.activeInvite === c) state.activeInvite = null; });
+            await reloadGroup();
+            renderManageInvites();
+            toast('已作废 ' + r.revoked.length + ' 条');
+        } catch (e) { toast(e.message, true); }
+    }
+
+    async function purgeInvite(inviteCode) {
+        var g = state.group;
+        if (!g) return;
+        var ok = await askConfirm(
+            '删除这条记录',
+            '把 ' + inviteCode + ' 从记录里抹掉。它已经失效了，删不删都不影响谁能进群，' +
+            '但删掉之后就查不到「这个码是谁什么时候发的」了。',
+            '删除'
+        );
+        if (!ok) return;
+        try {
+            await API.purgeInvite(g.code, inviteCode);
+            await reloadGroup();
+            renderManageInvites();
+            toast('已删除 ' + inviteCode);
+        } catch (e) { toast(e.message, true); }
+    }
+
+    async function openInvites() {
+        if (!state.group) return fallbackHome();
+        if (!state.group.isCreator) return toast('只有群主能管理邀请链接', true);
+        show('invites', { title: '邀请链接', back: function () { show('group', { title: '群组', back: goHome, replace: true }); } });
+        renderManageInvites();
+    }
+
+    function initManageInvites() {
+        $$('#inv-ttl button').forEach(function (b) {
+            b.addEventListener('click', function () {
+                $$('#inv-ttl button').forEach(function (x) { x.classList.remove('on'); });
+                b.classList.add('on');
+                state.newInviteTtl = b.getAttribute('data-ttl');
+            });
+        });
+        $('#btn-inv-gen').addEventListener('click', generateInvite);
+        $('#btn-inv-rotate').addEventListener('click', rotateGroupCode);
+
+        // 勾选走事件委托：列表是整体重画的，逐个绑会漏
+        $('#inv-active-list').addEventListener('change', function (e) {
+            if (e.target && e.target.hasAttribute && e.target.hasAttribute('data-pick')) syncInviteBulk();
+        });
+        $('#btn-inv-selectall').addEventListener('click', function () {
+            var picks = $$('#inv-active-list [data-pick]');
+            var allOn = picks.length && picks.every(function (p) { return p.checked; });
+            picks.forEach(function (p) { p.checked = !allOn; });
+            syncInviteBulk();
+        });
+        $('#btn-inv-revoke-selected').addEventListener('click', revokeSelectedInvites);
+
+        $('#btn-inv-toggle-history').addEventListener('click', function () {
+            var box = $('#inv-history-box');
+            box.hidden = !box.hidden;
+            $('#btn-inv-toggle-history').textContent = box.hidden ? '显示已失效的记录' : '收起已失效的记录';
+        });
     }
 
     function qrSvg(text, cellSize) {
@@ -1395,41 +1755,19 @@
     }
 
     async function renderQr(code) {
-        var list = await shareCandidates();
         var origin = await joinOrigin();
         var url = origin + '/?code=' + code;
 
         $('#group-qr').innerHTML = qrSvg(url, 4);
         $('#group-code').title = url;
         $('#group-url').textContent = url;
-
-        // 本机有多张网卡时，同学要连的未必是第一个；给一个切换入口，
-        // 否则手机上扫码打不开会被当成 Bug。
-        var alt = $('#group-url-alt');
-        if (list.length > 1) {
-            alt.hidden = false;
-            alt.innerHTML = '<span class="tiny" style="flex:0 0 100%;margin-bottom:2px">同学如果打不开，换一个地址试试：</span>' +
-                list.map(function (u) {
-                    return '<button class="btn secondary small" data-url="' + esc(u) + '"' +
-                        (u === origin ? ' style="flex:1"' : ' style="flex:1;opacity:.6"') + '>' +
-                        esc(u.replace(/^https?:\/\//, '')) + '</button>';
-                }).join('');
-            $$('#group-url-alt button').forEach(function (b) {
-                b.addEventListener('click', function () {
-                    Store.set(SHARE_KEY, b.getAttribute('data-url'));
-                    renderQr(code);
-                });
-            });
-        } else {
-            alt.hidden = true;
-        }
     }
 
     function zoomQr() {
-        var code = state.group && state.group.code;
-        if (!code) return;
-        joinUrl(code).then(function (url) {
-            $('#qr-modal-code').textContent = code;
+        var disp = currentDisplayCode();
+        if (!disp) return toast('现在没有能用的邀请链接', true);
+        joinUrl(disp.code).then(function (url) {
+            $('#qr-modal-code').textContent = disp.code;
             $('#qr-modal-qr').innerHTML = qrSvg(url, 6);
             $('#qr-modal').hidden = false;
         });
@@ -1486,16 +1824,21 @@
     function initGroup() {
         initGroupSettings();
         $('#btn-copy-code').addEventListener('click', function () {
-            if (state.group) copyText(state.group.code, '邀请码已复制');
+            var disp = currentDisplayCode();
+            if (disp) copyText(disp.code, '邀请码已复制');
         });
         $('#btn-copy-link').addEventListener('click', function () {
-            if (!state.group) return;
-            var code = state.group.code;
-            joinUrl(code).then(function (u) {
-                copyText(shareMessage(u, code), '分享文案已复制，直接发群里就行');
+            var disp = currentDisplayCode();
+            if (!disp) return;
+            joinUrl(disp.code).then(function (u) {
+                copyText(shareMessage(u, disp.code), '分享文案已复制，直接发群里就行');
             });
         });
         $('#btn-zoom-qr').addEventListener('click', zoomQr);
+
+        // 多个链接的增删作废都在独立的「邀请链接」页里，这里只留入口
+        $('#btn-manage-invites').addEventListener('click', openInvites);
+
         $('#qr-modal-close').addEventListener('click', function () { closeModal($('#qr-modal')); });
         $('#qr-modal').addEventListener('click', function (e) {
             if (e.target === $('#qr-modal')) closeModal($('#qr-modal'));
@@ -2000,6 +2343,7 @@
         initAuth();
         initHome();
         initGroup();
+        initManageInvites();
         initCompare();
         bindGlobal();
         initTheme();

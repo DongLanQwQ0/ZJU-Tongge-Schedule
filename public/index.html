@@ -168,12 +168,19 @@
         <div class="code" id="group-code">······</div>
         <div class="qr" id="group-qr"></div>
         <div class="tiny" id="group-url" style="margin-top:10px;word-break:break-all"></div>
-        <div class="row" id="group-url-alt" style="margin-top:8px;flex-wrap:wrap" hidden></div>
         <div class="row" style="margin-top:12px">
             <button class="btn secondary small" id="btn-copy-code" style="flex:1">复制邀请码</button>
             <button class="btn secondary small" id="btn-copy-link" style="flex:1">复制链接</button>
             <button class="btn secondary small" id="btn-zoom-qr" style="flex:1">放大二维码</button>
         </div>
+
+        <!-- 这里显示的码是谁的、什么时候过期，都在这一行讲清楚 -->
+        <p class="tiny" id="group-current-note" style="margin-top:10px"></p>
+
+        <!-- 多个链接的管理搬到独立页面，这里只留一个入口 -->
+        <button class="link-btn center" id="btn-manage-invites" style="margin-top:6px" hidden>
+            管理邀请链接
+        </button>
     </div>
 
     <div class="card">
@@ -209,6 +216,61 @@
         <button class="btn danger" id="btn-group-delete" hidden>解散群组</button>
     </div>
     <input type="file" accept=".ics,.txt" id="group-file" hidden>
+</section>
+
+<!-- ==================================================== 邀请链接管理 -->
+<section class="screen" id="screen-invites">
+    <div class="card">
+        <h2>有效邀请链接 <span class="sub" id="inv-count"></span></h2>
+        <p class="tiny" style="margin-bottom:10px">
+            可以同时发多条，每条各算各的有效期。过期或作废后新人就进不来了，
+            <b>已经在群里的人不受影响</b>。
+        </p>
+        <div class="list" id="inv-active-list"><div class="empty">还没有有效的邀请链接</div></div>
+
+        <div class="row" style="margin-top:12px" id="inv-bulk-bar" hidden>
+            <button class="btn secondary small" id="btn-inv-selectall" style="flex:1">全选</button>
+            <button class="btn danger small" id="btn-inv-revoke-selected" style="flex:1">作废选中的</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>新建邀请链接</h2>
+        <label class="field">
+            <span>有效期</span>
+            <div class="segmented" id="inv-ttl">
+                <button data-ttl="1d">1 天</button>
+                <button data-ttl="3d">3 天</button>
+                <button data-ttl="7d">7 天</button>
+                <button data-ttl="30d">1 个月</button>
+                <button data-ttl="never" class="on">永久</button>
+            </div>
+        </label>
+        <label class="field" style="margin-top:10px">
+            <span>备注名（选填，只你自己看得见）</span>
+            <input class="input" id="inv-label" maxlength="12" placeholder="比如：给 3 班的">
+        </label>
+        <button class="btn" id="btn-inv-gen" style="margin-top:10px">＋ 生成一条新链接</button>
+    </div>
+
+    <div class="card">
+        <h2>群自己的码</h2>
+        <p class="tiny" style="margin-bottom:10px">
+            这是群的永久地址 <b class="mono" id="inv-owner-code">······</b>，
+            改版前发出去的链接用的就是它。换掉之后老链接全部失效。
+        </p>
+        <button class="btn danger" id="btn-inv-rotate">换一个新码</button>
+    </div>
+
+    <div class="card">
+        <button class="link-btn center" id="btn-inv-toggle-history">显示已失效的记录</button>
+        <div id="inv-history-box" hidden style="margin-top:10px">
+            <p class="tiny" style="margin-bottom:8px">
+                作废和过期的记录留在这里备查。删掉之后就查不到「这个码是谁发的」了。
+            </p>
+            <div class="list" id="inv-history-list"></div>
+        </div>
+    </div>
 </section>
 
 <!-- ==================================================== 比对页 -->

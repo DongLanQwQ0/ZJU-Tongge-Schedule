@@ -27,6 +27,20 @@ const MAX_REMARK = 12;      // 自己给群友起的备注，最长 12 字
 const SUSPECT_WINDOW = 24 * 3600000;
 const SUSPECT_IP_COUNT = 6;
 
+/**
+ * 邀请链接的有效期档位（毫秒）；null = 永久。
+ * 放在模块作用域，因为要导出给测试与前端用。
+ */
+const INVITE_TTLS = {
+    '1d': 86400000,
+    '3d': 3 * 86400000,
+    '7d': 7 * 86400000,
+    '30d': 30 * 86400000,
+    'never': null
+};
+const MAX_INVITES_PER_GROUP = 20;   // 同时「还能用」的邀请码上限
+const MAX_INVITE_LABEL = 12;
+
 /** 带 HTTP 状态码的业务错误 */
 function fail(status, message) {
     const e = new Error(message);
@@ -609,8 +623,60 @@ function createStore(dataDir) {
     // -------------------------------------------------- 群组
 
     async function readGroup(code) {
+        const file = await resolveGroupFile(code);
+        if (!file) return null;
+        return readJson(file, () => null);
+    }
+
+    /**
+     * 换一个新的 8 位邀请码，旧的当场作废。
+     *
+     * 与「作废某一枚邀请链接」不同：这是换掉**群自己的码**，
+     * 也就是「以前发出去的所有旧链接一起失效」。用途是把改版前那批
+     * 6 位老码清掉 —— 10⁶ 空间配 20 次/分钟的限流，枚举完只要一个多月。
+     *
+     * 关键点：**只改 g.code，不动文件名**。
+     * 文件名是内部存储键；改了它就要 rename，而 rename 跨崩溃不原子，
+     * 一旦失败群就丢了。groupDetail 会按 code 字段找群，所以换码后一切照常。
+     *
+     * 成员完全不受影响（按 userId 记的），受影响的只有旧链接。
+     */
+    async function rotateGroupCode(code, actorId, meta) {
         const c = validateCode(code);
-        return readJson(groupFile(c), () => null);
+        const info = meta || {};
+        await fsp.mkdir(GROUPS, { recursive: true });
+        const files = await fsp.readdir(GROUPS);
+
+        for (const f of files) {
+            if (!/^\d{6,8}\.json$/.test(f)) continue;
+            const file = path.join(GROUPS, f);
+            const result = await withLock(`group:${c}`, async () => {
+                const g = await readJson(file, () => null);
+                if (!g || g.code !== c) return null;
+                // 只有群主本人或管理员能换
+                if (!info.asAdmin && g.creatorId !== actorId) {
+                    throw fail(403, '只有群主能换邀请码');
+                }
+                let next = auth.newGroupCode();
+                for (let i = 0; i < 10 && next === c; i++) next = auth.newGroupCode();
+
+                g.code = next;
+                g.codeRotatedAt = now();
+                // 记下所有换掉的旧码（含文件名用的那个）。joinByInvite 靠它把旧码挡住 ——
+                // 只记 g.code 字段是不够的，因为群文件的**文件名**仍是旧码，
+                // 不挡的话「拿旧码来读文件」这条路径会让旧码悄悄复活。
+                const retired = Array.isArray(g.codeRotatedFromList) ? g.codeRotatedFromList.slice() : [];
+                if (g.codeRotatedFrom && !retired.includes(g.codeRotatedFrom)) retired.push(g.codeRotatedFrom);
+                if (!retired.includes(c)) retired.push(c);
+                g.codeRotatedFromList = retired;
+                g.codeRotatedFrom = c;
+                g.updatedAt = now();
+                await writeJsonAtomic(file, g);
+                return { code: next, oldCode: c };
+            });
+            if (result) return result;
+        }
+        throw fail(404, '群组不存在或已解散');
     }
 
     async function createGroup(creatorId, name) {
@@ -640,6 +706,234 @@ function createStore(dataDir) {
         throw fail(500, '邀请码生成失败，请重试');
     }
 
+    // -------------------------------------------------- 邀请链接（可多枚、可过期）
+
+    /**
+     * 邀请链接与「群」的关系，是本功能的核心约定，先讲清楚：
+     *
+     *   g.code      —— 群的**永久地址**，也是文件名。永远有效，永远不变。
+     *                  群主自己用它是为了「回到自己的群」，不当作对外分享的凭证。
+     *   g.invites[] —— 对外发出去的**邀请链接**，可以同时存在很多枚，
+     *                  每枚各自带有效期（null = 永久），随时可以单独作废。
+     *
+     * 为什么不把有效期加在 g.code 上：那样「过期」就等于这个群没了地址，
+     * 而群本身不该有寿命 —— 你问得对，群为什么要有有效期。
+     * 有寿命的只是发给别人的那张票。
+     *
+     * 过期只挡**新人入群**：已经在群里的人完全不受影响
+     * （成员按 userId 记，跟票无关）。
+     */
+
+    /** 允许的有效期档位；null = 永久。前端传什么都在这里收敛 */
+    const INVITE_TTL_OPTIONS = INVITE_TTLS;
+    const MAX_INVITES = MAX_INVITES_PER_GROUP;
+
+    function resolveInviteExpiry(ttl) {
+        const key = String(ttl == null || ttl === '' ? 'never' : ttl);
+        if (!(key in INVITE_TTL_OPTIONS)) throw fail(400, '有效期只能是 1d / 3d / 7d / 30d / never');
+        const ms = INVITE_TTL_OPTIONS[key];
+        return ms == null ? null : now() + ms;
+    }
+
+    /** 这枚票还能用吗（永久票永远能用）；作废过的永远不能用 */
+    function inviteActive(inv, at) {
+        if (!inv || inv.revokedAt) return false;
+        return inv.expiresAt == null || at < inv.expiresAt;
+    }
+
+    /** 给前端的形态：带上计算结果，省得前端各自算一套 */
+    function publicInvite(inv, at) {
+        const expired = inv.expiresAt != null && at >= inv.expiresAt;
+        return {
+            code: inv.code,
+            label: inv.label || '',
+            createdAt: inv.createdAt || 0,
+            expiresAt: inv.expiresAt == null ? null : inv.expiresAt,
+            active: inviteActive(inv, at),
+            expired: expired,
+            revoked: !!inv.revokedAt,
+            // 剩余毫秒，前端拿来显示「还剩 2 天」；永久是 null
+            remainingMs: inv.expiresAt == null ? null : Math.max(0, inv.expiresAt - at)
+        };
+    }
+
+    /**
+     * 老群没有 invites 字段；读的时候一律补数组，别让调用方到处判空。
+     *
+     * 注意这里**必须**把新数组挂回 g.invites：早先偷懒写成 `: []`，
+     * 结果 invitesOf(g).push(x) 推的是一个临时数组，写盘时自然没有 ——
+     * 表现是「发码返回成功、但列表里永远看不到」，而且完全没有报错。
+     */
+    function invitesOf(g) {
+        if (!Array.isArray(g.invites)) g.invites = [];
+        return g.invites;
+    }
+
+    /** 这个码是不是这个群的邀请码（含群主自己的永久码） */
+    function codeBelongsTo(g, code) {
+        if (g.code === code) return true;
+        return invitesOf(g).some((i) => i.code === code);
+    }
+
+    /** 群主的永久码不当作邀请票；这里列出需要校验有效期的那些票 */
+    function findInvite(g, code) {
+        return invitesOf(g).find((i) => i.code === code) || null;
+    }
+
+    /**
+     * 作废旧邀请码。传 oldCode 就把那一枚标记作废（留档，方便事后看「谁给的」），
+     * 也可以顺手发一枚新的。不做删除 —— 删了就没人知道这个码曾经存在过。
+     */
+    async function revokeInvite(groupCode, ownerId, inviteCode, opts) {
+        const c = validateCode(groupCode);
+        const target = String(inviteCode || '').trim();
+        const options = opts || {};
+        if (c === target) throw fail(400, '不能作废群主自己的永久码');
+
+        return withLock(`group:${c}`, async () => {
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
+            if (!g) throw fail(404, '群组不存在或已解散');
+            if (g.creatorId !== ownerId) throw fail(403, '只有群主能作废邀请码');
+
+            const inv = findInvite(g, target);
+            if (!inv) throw fail(404, '这个邀请码不在这个群里');
+            if (inv.revokedAt) return { ok: true, already: true };
+
+            inv.revokedAt = now();
+            // 顺手发一枚新的（可选），这样「作废并重发」是一次操作
+            let issued = null;
+            if (options.issueNew) {
+                issued = newInviteRecord(g, ownerId, options.ttl, options.label);
+                invitesOf(g).push(issued);
+            }
+            g.updatedAt = now();
+            await writeJsonAtomic(file, g);
+            return { ok: true, revoked: target, issued: issued ? publicInvite(issued, now()) : null };
+        });
+    }
+
+    /**
+     * 彻底删掉一条邀请记录。
+     *
+     * 和 revokeInvite 的区别：作废是「标记失效但留档」（能回答「这码谁发的」），
+     * 这里是「从列表里抹掉」。只允许删已经作废或过期的 ——
+     * 还能用的码必须先作废再删，免得一步误操作把正在用的链接弄没了。
+     */
+    async function purgeInvite(groupCode, ownerId, inviteCode) {
+        const c = validateCode(groupCode);
+        const target = String(inviteCode || '').trim();
+        if (c === target) throw fail(400, '群主自己的永久码不能删');
+
+        return withLock(`group:${c}`, async () => {
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
+            if (!g) throw fail(404, '群组不存在或已解散');
+            if (g.creatorId !== ownerId) throw fail(403, '只有群主能管理邀请码');
+
+            const list = invitesOf(g);
+            const inv = list.find((i) => i.code === target);
+            if (!inv) throw fail(404, '这个邀请码不在这个群里');
+            if (inviteActive(inv, now())) {
+                throw fail(400, '这条链接还能用，先作废再删');
+            }
+            g.invites = list.filter((i) => i.code !== target);
+            g.updatedAt = now();
+            await writeJsonAtomic(file, g);
+            return { ok: true, removed: target };
+        });
+    }
+
+    /**
+     * 批量作废：管理页上「全选有效链接 -> 作废」用。
+     * @returns {{revoked:string[]}} 实际被作废的码
+     */
+    async function revokeInvites(groupCode, ownerId, codes) {
+        const c = validateCode(groupCode);
+        const want = Array.isArray(codes) ? codes.map((x) => String(x).trim()).filter(Boolean) : [];
+        if (!want.length) throw fail(400, '没勾选要作废的链接');
+
+        return withLock(`group:${c}`, async () => {
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
+            if (!g) throw fail(404, '群组不存在或已解散');
+            if (g.creatorId !== ownerId) throw fail(403, '只有群主能管理邀请码');
+
+            const at = now();
+            const revoked = [];
+            invitesOf(g).forEach((inv) => {
+                if (!want.includes(inv.code)) return;
+                if (inv.revokedAt) return;                 // 已经作废的跳过，幂等
+                inv.revokedAt = at;
+                revoked.push(inv.code);
+            });
+            if (revoked.length) {
+                g.updatedAt = at;
+                await writeJsonAtomic(file, g);
+            }
+            return { revoked };
+        });
+    }
+
+    /**
+     * 造一枚新票，但先不落盘（调用方在锁内拼好再写）
+     */
+    function newInviteRecord(g, ownerId, ttl, label) {
+        const clean = String(label == null ? '' : label)
+            .replace(/[\u0000-\u001f\u007f]/g, '')
+            .trim()
+            .slice(0, MAX_INVITE_LABEL);
+        return {
+            code: auth.newGroupCode(),
+            label: clean,
+            createdAt: now(),
+            createdBy: ownerId,
+            expiresAt: resolveInviteExpiry(ttl)
+        };
+    }
+
+    /**
+     * 新建一枚邀请链接。
+     * @param ttl '1d' | '3d' | '7d' | '30d' | 'never'
+     */
+    async function addInvite(groupCode, ownerId, ttl, label) {
+        const c = validateCode(groupCode);
+        return withLock(`group:${c}`, async () => {
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
+            if (!g) throw fail(404, '群组不存在或已解散');
+            if (g.creatorId !== ownerId) throw fail(403, '只有群主能发新邀请码');
+
+            const list = invitesOf(g);
+            const at = now();
+            // 配额只管「还能用的票」：作废/过期的老票不占位置，
+            // 所以不用急着清历史 —— 留着才能事后查到「这个码是谁什么时候发的」。
+            if (list.filter((i) => inviteActive(i, at)).length >= MAX_INVITES) {
+                throw fail(400, `同时最多 ${MAX_INVITES} 个有效的邀请码，先作废几个再发`);
+            }
+
+            const inv = newInviteRecord(g, ownerId, ttl, label);
+            // 撞码就重来。注意这里查的是**全部历史**，不只是还能用的那些 ——
+            // 作废/过期的码是留档给人查的，但它们仍然是「曾经发出去过的码」，
+            // 一旦被重新发出来，拿到旧链接的人就会莫名其妙地重新获得入口。
+            // 作废码被复活是这个功能最不该出的错。
+            for (let i = 0; i < 10 && g.invites.some((x) => x.code === inv.code); i++) {
+                inv.code = auth.newGroupCode();
+            }
+            if (g.invites.some((x) => x.code === inv.code)) {
+                throw fail(500, '邀请码生成失败，请重试');
+            }
+            invitesOf(g).push(inv);
+            g.updatedAt = at;
+            await writeJsonAtomic(file, g);
+            return publicInvite(inv, at);
+        });
+    }
+
     /**
      * 老数据没有这两个字段，读的时候一律补默认值。
      * 默认值 == 这个功能上线之前的行为，升级不会改变已有群组的现状。
@@ -651,12 +945,19 @@ function createStore(dataDir) {
     /**
      * 入群。
      * 开放模式直接进；审批模式只登记一条申请，等群主同意。
+     *
+     * `code` 既可能是群主自己的永久码，也可能是某一枚有时效的邀请码 ——
+     * 两种都得认，因为改版前的链接用的就是群码，不能让老链接失效。
      * @returns {{group:object, pending:boolean}}
      */
     async function joinGroup(code, userId) {
         const c = validateCode(code);
         return withLock(`group:${c}`, async () => {
-            const g = await readJson(groupFile(c), () => null);
+            // 走 resolveGroupFile，别用 groupFile(c) ——
+            // 换过码的群，码和文件名已经不一样了，直接取文件会静默 404。
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
             if (!g) throw fail(404, '群组不存在或已解散');
             if (g.members.some((m) => m.userId === userId)) return { group: g, pending: false };   // 幂等
             if (!Array.isArray(g.requests)) g.requests = [];
@@ -665,7 +966,7 @@ function createStore(dataDir) {
                 if (!g.requests.some((r) => r.userId === userId)) {
                     g.requests.push({ userId, at: now() });
                     g.updatedAt = now();
-                    await writeJsonAtomic(groupFile(c), g);
+                    await writeJsonAtomic(file, g);
                 }
                 return { group: g, pending: true };   // 重复申请也当成功，别让人以为点坏了
             }
@@ -674,9 +975,97 @@ function createStore(dataDir) {
             g.requests = g.requests.filter((r) => r.userId !== userId);
             g.members.push({ userId, joinedAt: now() });
             g.updatedAt = now();
-            await writeJsonAtomic(groupFile(c), g);
+            await writeJsonAtomic(file, g);
             return { group: g, pending: false };
         });
+    }
+
+    /**
+     * 按邀请码入群 —— 这才是「有时效的邀请链接」真正的入口。
+     *
+     * joinGroup 是按**群码**（= 文件名）直接取文件的，遇到邀请码根本找不到文件：
+     * 邀请码不是群的身份，只是群里的一个字段。所以这里必须先扫一遍群，
+     * 看哪个群的 invites 里挂着这个码。
+     *
+     * 扫描代价用限流兜住：入群接口 20 次/分钟。反过来也正因为要扫，
+     * 6 位码那种小空间才更该早点换掉。
+     *
+     * 三种结果，语义要分清：
+     *   码不存在            -> 404「邀请链接无效」
+     *   码在、但过期/已作废  -> 410「邀请链接已过期，找群主要个新的」
+     *   码有效              -> 走原来的入群流程
+     */
+    async function joinByInvite(inviteCode, userId) {
+        const c = validateCode(inviteCode);
+        const at = now();
+
+        await fsp.mkdir(GROUPS, { recursive: true });
+        const files = await fsp.readdir(GROUPS);
+
+        for (const f of files) {
+            if (!/^\d{6,8}\.json$/.test(f)) continue;
+            const g = await readJson(path.join(GROUPS, f), () => null);
+            if (!g || !Array.isArray(g.members)) continue;
+
+            const inv = findInvite(g, c);
+            if (!inv) continue;
+
+            // 找到了这枚票。作废与过期给不同的说法，方便用户判断该找谁
+            if (inv.revokedAt) throw fail(410, '这个邀请链接已经被群主作废了，向 TA 要个新的');
+            if (inv.expiresAt != null && at >= inv.expiresAt) {
+                throw fail(410, '这个邀请链接已经过期了，向群主要个新的');
+            }
+            return joinGroup(g.code, userId);
+        }
+
+        // 也认群主自己的永久码 —— 改版前发出去的链接用的就是它，不能让它失效。
+        // resolveGroupFile 默认不认「换码时被换掉的那批」，所以换过码的群
+        // 拿旧码来会直接扑空 —— 这正是我们要的：换码必须真的作废旧码。
+        const file = await resolveGroupFile(c);
+        if (file) {
+            const g = await readJson(file, () => null);
+            if (g && Array.isArray(g.members)) return joinGroup(g.code, userId);
+        }
+
+        throw fail(404, '邀请链接无效，确认一下是不是复制少了数字');
+    }
+
+    /** 这个码是不是被「换群码」换掉的旧码 */
+    function isRetiredCode(g, code) {
+        if (g.codeRotatedFrom === code) return true;
+        return Array.isArray(g.codeRotatedFromList) && g.codeRotatedFromList.includes(code);
+    }
+
+    /**
+     * 把「群码」解析成磁盘上的文件路径。
+     *
+     * 为什么需要它：群文件名是内部存储键，**不等于**群码。
+     * 新群的 code === 文件名，所以一次 stat 就命中；但「换群码」只改 g.code、
+     * 不动文件名（rename 跨崩溃不原子，失败就丢群），于是老群的
+     * code 与文件名就分家了。所有需要读写的路径都得走这里，
+     * 直接用 groupFile(码) 会在换过码的群上扑空 —— 而且是静默 404。
+     *
+     * @param opts.allowRetired 是否认「换码时被换掉的老码」（默认不认）
+     */
+    async function resolveGroupFile(code, opts) {
+        const c = validateCode(code);
+        const options = opts || {};
+        const direct = groupFile(c);
+        const hit = await readJson(direct, () => null);
+        if (hit) {
+            if (!options.allowRetired && isRetiredCode(hit, c)) return null;
+            return direct;
+        }
+        await fsp.mkdir(GROUPS, { recursive: true });
+        for (const f of await fsp.readdir(GROUPS)) {
+            if (!/^\d{6,8}\.json$/.test(f)) continue;
+            const p = path.join(GROUPS, f);
+            const g = await readJson(p, () => null);
+            if (!g || g.code !== c) continue;
+            if (!options.allowRetired && isRetiredCode(g, c)) return null;
+            return p;
+        }
+        return null;
     }
 
     /**
@@ -698,7 +1087,9 @@ function createStore(dataDir) {
         if ([...clean].length > MAX_REMARK) throw fail(400, `备注最多 ${MAX_REMARK} 个字`);
 
         return withLock(`group:${c}`, async () => {
-            const g = await readJson(groupFile(c), () => null);
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
             if (!g) throw fail(404, '群组不存在或已解散');
             if (!Array.isArray(g.members) || !g.members.some((m) => m.userId === userId)) {
                 throw fail(403, '你不在这个群里');
@@ -707,7 +1098,7 @@ function createStore(dataDir) {
             if (clean) g.selfRemarks[userId] = clean;
             else delete g.selfRemarks[userId];
             g.updatedAt = now();
-            await writeJsonAtomic(groupFile(c), g);
+            await writeJsonAtomic(file, g);
             return clean;
         });
     }
@@ -730,7 +1121,9 @@ function createStore(dataDir) {
         if (!Object.keys(next).length) throw fail(400, '没有要改的设置');
 
         return withLock(`group:${c}`, async () => {
-            const g = await readJson(groupFile(c), () => null);
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
             if (!g) throw fail(404, '群组不存在或已解散');
             if (g.creatorId !== ownerId) throw fail(403, '只有群主能改群组设置');
             Object.assign(g, next);
@@ -745,7 +1138,7 @@ function createStore(dataDir) {
                 g.requests = [];
             }
             g.updatedAt = now();
-            await writeJsonAtomic(groupFile(c), g);
+            await writeJsonAtomic(file, g);
             return g;
         });
     }
@@ -755,7 +1148,9 @@ function createStore(dataDir) {
         const c = validateCode(code);
         const target = String(targetUserId == null ? '' : targetUserId);
         return withLock(`group:${c}`, async () => {
-            const g = await readJson(groupFile(c), () => null);
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
             if (!g) throw fail(404, '群组不存在或已解散');
             if (g.creatorId !== ownerId) throw fail(403, '只有群主能审批');
             if (!Array.isArray(g.requests) || !g.requests.some((r) => r.userId === target)) {
@@ -767,7 +1162,7 @@ function createStore(dataDir) {
                 g.members.push({ userId: target, joinedAt: now() });
             }
             g.updatedAt = now();
-            await writeJsonAtomic(groupFile(c), g);
+            await writeJsonAtomic(file, g);
             return g;
         });
     }
@@ -777,12 +1172,14 @@ function createStore(dataDir) {
         const c = validateCode(code);
         const target = String(targetUserId == null ? '' : targetUserId);
         return withLock(`group:${c}`, async () => {
-            const g = await readJson(groupFile(c), () => null);
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
             if (!g) throw fail(404, '群组不存在或已解散');
             if (g.creatorId !== ownerId) throw fail(403, '只有群主能审批');
             g.requests = (Array.isArray(g.requests) ? g.requests : []).filter((r) => r.userId !== target);
             g.updatedAt = now();
-            await writeJsonAtomic(groupFile(c), g);
+            await writeJsonAtomic(file, g);
             return g;
         });
     }
@@ -790,7 +1187,9 @@ function createStore(dataDir) {
     async function leaveGroup(code, userId) {
         const c = validateCode(code);
         return withLock(`group:${c}`, async () => {
-            const g = await readJson(groupFile(c), () => null);
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
             if (!g) throw fail(404, '群组不存在或已解散');
             if (g.creatorId === userId) throw fail(400, '你是群主，可以直接解散群组');
             g.members = g.members.filter((m) => m.userId !== userId);
@@ -798,7 +1197,7 @@ function createStore(dataDir) {
             // 退群就把对外备注一起带走，免得以后重新进群又顶出来一个旧名字
             if (g.selfRemarks && typeof g.selfRemarks === 'object') delete g.selfRemarks[userId];
             g.updatedAt = now();
-            await writeJsonAtomic(groupFile(c), g);
+            await writeJsonAtomic(file, g);
             return g;
         });
     }
@@ -812,7 +1211,9 @@ function createStore(dataDir) {
         const target = String(targetUserId == null ? '' : targetUserId);
         if (!target) throw fail(400, '没指明要移除谁');
         return withLock(`group:${c}`, async () => {
-            const g = await readJson(groupFile(c), () => null);
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
             if (!g) throw fail(404, '群组不存在或已解散');
             if (g.creatorId !== ownerId) throw fail(403, '只有群主能移除成员');
             if (target === ownerId) throw fail(400, '你是群主，不能移除自己；想结束就解散群组');
@@ -821,7 +1222,7 @@ function createStore(dataDir) {
             g.requests = (Array.isArray(g.requests) ? g.requests : []).filter((r) => r.userId !== target);
             if (g.selfRemarks && typeof g.selfRemarks === 'object') delete g.selfRemarks[target];
             g.updatedAt = now();
-            await writeJsonAtomic(groupFile(c), g);
+            await writeJsonAtomic(file, g);
             return g;
         });
     }
@@ -829,10 +1230,12 @@ function createStore(dataDir) {
     async function deleteGroup(code, userId) {
         const c = validateCode(code);
         return withLock(`group:${c}`, async () => {
-            const g = await readJson(groupFile(c), () => null);
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
             if (!g) throw fail(404, '群组不存在或已解散');
             if (g.creatorId !== userId) throw fail(403, '只有群主能解散群组');
-            await fsp.unlink(groupFile(c)).catch(() => {});
+            await fsp.unlink(file).catch(() => {});
             return g;
         });
     }
@@ -865,6 +1268,8 @@ function createStore(dataDir) {
             })
             .filter(Boolean);
         const settings = groupSettings(g);
+        const at = now();
+        const invites = invitesOf(g);
         return {
             code: g.code,
             name: g.name,
@@ -872,6 +1277,15 @@ function createStore(dataDir) {
             createdAt: g.createdAt,
             joinMode: settings.joinMode,
             isCreator: g.creatorId === viewerId,
+            // 成员也能看到**还能用**的邀请码：这样谁都能帮群里拉人。
+            // 但作废/过期的那堆只给群主看 —— 那是管理痕迹，不是分享材料。
+            invites: (g.creatorId === viewerId
+                ? invites.slice()
+                : invites.filter((i) => inviteActive(i, at)))
+                .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+                .map((i) => publicInvite(i, at)),
+            // 群主自己的永久码，不当作邀请票，但界面要能显示出来
+            ownerCode: g.creatorId === viewerId ? g.code : null,
             // 申请名单只给群主看
             requests: g.creatorId === viewerId
                 ? (Array.isArray(g.requests) ? g.requests : [])
@@ -1047,9 +1461,11 @@ function createStore(dataDir) {
     async function deleteGroupAsAdmin(code) {
         const c = validateCode(code);
         return withLock(`group:${c}`, async () => {
-            const g = await readJson(groupFile(c), () => null);
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
             if (!g) throw fail(404, '群组不存在或已解散');
-            await fsp.unlink(groupFile(c)).catch(() => {});
+            await fsp.unlink(file).catch(() => {});
             return g;
         });
     }
@@ -1126,7 +1542,13 @@ function createStore(dataDir) {
         // 群组
         readGroup,
         createGroup,
+        rotateGroupCode,
         joinGroup,
+        joinByInvite,
+        addInvite,
+        revokeInvite,
+        purgeInvite,
+        revokeInvites,
         updateGroupSettings,
         approveRequest,
         rejectRequest,
@@ -1149,6 +1571,8 @@ module.exports = {
     MAX_MEMBERS,
     MAX_COURSES,
     MAX_REMARK,
+    MAX_INVITES_PER_GROUP,
+    INVITE_TTLS,
     SUSPECT_IP_COUNT,
     DORMANT_DAYS,
     SESSION_TTL,

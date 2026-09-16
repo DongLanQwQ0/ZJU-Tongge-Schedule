@@ -491,7 +491,9 @@ async function createServer(options = {}) {
         ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/join$/, async (req, res, m) => {
             limiter.join.check(clientIp(req));   // 枚举邀请码的主要入口，卡死在这里
             const { user } = await requireUser(req);
-            const r = await store.joinGroup(validateCode(m[1]), user.id);
+            // 走 joinByInvite：它先认「有时效的邀请码」，再退回群主自己的永久码。
+            // 直接用 joinGroup 的话，邀请码（不是群码）根本找不到文件。
+            const r = await store.joinByInvite(validateCode(m[1]), user.id);
             return { ok: true, code: r.group.code, name: r.group.name, pending: r.pending };
         }],
 
@@ -509,6 +511,84 @@ async function createServer(options = {}) {
             const body = await readBody(req, res);
             await store.updateGroupSettings(validateCode(m[1]), user.id, body);
             return { ok: true };
+        }],
+
+        // 群主换掉群自己的码：以前发出去的所有旧链接一起失效。
+        // 主要给改版前那批 6 位老群用 —— 老码空间小，早点换掉更稳。
+        ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/rotate-code$/, async (req, res, m) => {
+            const { user } = await requireUser(req);
+            const r = await store.rotateGroupCode(validateCode(m[1]), user.id, {});
+            store.appendAudit({
+                event: 'group_rotate_code',
+                by: user.nickname,
+                from: r.oldCode,
+                to: r.code,
+                ip: clientIp(req)
+            });
+            return { ok: true, oldCode: r.oldCode, code: r.code };
+        }],
+
+        // 群主发一枚新的邀请链接，可带有效期：1d / 3d / 7d / 30d / never
+        ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/invites$/, async (req, res, m) => {
+            const { user } = await requireUser(req);
+            const body = await readBody(req, res);
+            const inv = await store.addInvite(validateCode(m[1]), user.id, body.ttl, body.label);
+            store.appendAudit({
+                event: 'invite_create',
+                by: user.nickname,
+                group: m[1],
+                code: inv.code,
+                expiresAt: inv.expiresAt,
+                ip: clientIp(req)
+            });
+            return { ok: true, invite: inv };
+        }],
+
+        // 群主批量作废若干条有效链接（管理页上的多选）
+        ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/invites\/revoke$/, async (req, res, m) => {
+            const { user } = await requireUser(req);
+            const body = await readBody(req, res);
+            const r = await store.revokeInvites(validateCode(m[1]), user.id, body.codes);
+            store.appendAudit({
+                event: 'invite_revoke_bulk',
+                by: user.nickname,
+                group: m[1],
+                codes: r.revoked,
+                ip: clientIp(req)
+            });
+            return { ok: true, revoked: r.revoked };
+        }],
+
+        // 彻底删掉一条已作废/已过期的邀请记录（抹掉存档）
+        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})\/invites\/(\d{6}|\d{8})\/purge$/, async (req, res, m) => {
+            const { user } = await requireUser(req);
+            const r = await store.purgeInvite(validateCode(m[1]), user.id, m[2]);
+            store.appendAudit({
+                event: 'invite_purge',
+                by: user.nickname,
+                group: m[1],
+                code: m[2],
+                ip: clientIp(req)
+            });
+            return r;
+        }],
+
+        // 群主作废某一枚邀请链接（可顺手发一枚新的）
+        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})\/invites\/(\d{6}|\d{8})$/, async (req, res, m) => {
+            const { user } = await requireUser(req);
+            const body = await readBody(req, res).catch(() => ({}));
+            const r = await store.revokeInvite(validateCode(m[1]), user.id, m[2], {
+                issueNew: !!(body && body.issueNew),
+                ttl: body && body.ttl
+            });
+            store.appendAudit({
+                event: 'invite_revoke',
+                by: user.nickname,
+                group: m[1],
+                code: m[2],
+                ip: clientIp(req)
+            });
+            return { ok: true, revoked: r.revoked || m[2], invite: r.issued || null };
         }],
 
         // 设自己在群里的对外备注（改的是自己的名字，所以不要求群主）
@@ -628,6 +708,21 @@ async function createServer(options = {}) {
             });
             // 明文只在这一个响应里出现，别的地方一概不留
             return { ok: true, nickname: r.nickname, password: r.password };
+        }],
+
+        // 管理员给任意群换一个 8 位新码（旧码当场作废）。
+        // 主要用途：清掉改版前那批 6 位老码 —— 它们的空间小得多。
+        ['POST', /^\/api\/admin\/groups\/(\d{6}|\d{8})\/rotate-code$/, async (req, res, m) => {
+            const { user: admin } = await requireAdmin(req);
+            const r = await store.rotateGroupCode(validateCode(m[1]), admin.id, { asAdmin: true });
+            store.appendAudit({
+                event: 'admin_rotate_group_code',
+                by: admin.nickname,
+                from: r.oldCode,
+                to: r.code,
+                ip: clientIp(req)
+            });
+            return { ok: true, oldCode: r.oldCode, code: r.code };
         }],
 
         // 解散任意群组，不需要是群主

@@ -475,6 +475,16 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .admin-row .row-acts { display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; }
 .admin-row .row-acts button { width: 100%; text-align: center; }
 
+/* 邀请链接管理：左侧勾选框。点整行不勾选，必须点框本身 —— 免得误批量作废 */
+.inv-pick {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    padding-right: 2px;
+    cursor: pointer;
+}
+.inv-pick input { width: 17px; height: 17px; accent-color: var(--accent, #0a84ff); }
+
 /* 临时密码：大号等宽、可点即复制。这是唯一一次能看到它的机会 */
 .secret {
     padding: 12px; border-radius: 11px; cursor: pointer;

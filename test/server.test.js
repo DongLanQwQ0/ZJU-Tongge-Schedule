@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createServer } = require('../server.js');
+const { INVITE_TTLS } = require('../shared/store.js');
 
 let server;
 let base;
@@ -614,3 +615,381 @@ test('关键文件损坏：优先从 .bak 恢复，而不是把所有人清空',
     assert.ok(back, '应当从 .bak 把账号找回，而不是从空表开始');
     assert.ok(fs.readdirSync(dir).some((f) => f.includes('.corrupt-')), '损坏的那份要留证');
 });
+
+test('邀请链接：作废过的码不会被重新发出来（复活旧链接）', async () => {
+    const t = await inviteSetup();
+    try {
+        // 发一枚、作废它，记住这个码
+        const dead = (await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: 'never' }
+        })).json()).invite;
+        await t.call(`/api/groups/${t.code}/invites/${dead.code}`, {
+            method: 'DELETE', token: t.owner.token, body: {}
+        });
+
+        // 再连发一批，确认这个码不会卷土重来。
+        // 作废码若能复活，拿着旧链接的人会莫名其妙重新拿到入口。
+        const issued = [];
+        for (let i = 0; i < 15; i++) {
+            const r = await (await t.call(`/api/groups/${t.code}/invites`, {
+                method: 'POST', token: t.owner.token, body: { ttl: 'never' }
+            })).json();
+            issued.push(r.invite.code);
+        }
+        assert.ok(!issued.includes(dead.code), '作废过的码不能被重新发出来');
+        assert.equal(new Set(issued).size, issued.length, '新发的码之间也不能重复');
+
+        // 作废那枚仍然进不来（410 = 码还在，但已被作废，语义比 404 更准）
+        const u = await newUser(t.call, '拿作废码的人');
+        const r = await t.call(`/api/groups/${dead.code}/join`, { method: 'POST', token: u.token });
+        assert.equal(r.status, 410);
+        assert.match((await r.json()).error, /作废/);
+    } finally { await t.close(); }
+});
+
+test('邀请链接：批量作废 + 彻底删除失效记录', async () => {
+    const t = await inviteSetup();
+    try {
+        const mk = async () => (await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: 'never' }
+        })).json()).invite;
+        const a = await mk(), b = await mk(), c = await mk();
+
+        // 批量作废 a、b（c 留着）
+        const bulk = await t.call(`/api/groups/${t.code}/invites/revoke`, {
+            method: 'POST', token: t.owner.token, body: { codes: [a.code, b.code] }
+        });
+        assert.equal(bulk.status, 200);
+        assert.deepEqual((await bulk.json()).revoked.sort(), [a.code, b.code].sort());
+
+        // 成员无权批量作废
+        const mate = await newUser(t.call, '想批量的人');
+        await t.call(`/api/groups/${c.code}/join`, { method: 'POST', token: mate.token });
+        assert.equal((await t.call(`/api/groups/${t.code}/invites/revoke`, {
+            method: 'POST', token: mate.token, body: { codes: [c.code] }
+        })).status, 403);
+
+        // 还能用的那条不许删（必须先作废）
+        assert.equal((await t.call(`/api/groups/${t.code}/invites/${c.code}/purge`, {
+            method: 'DELETE', token: t.owner.token, body: {}
+        })).status, 400);
+
+        // 已作废的可以删掉
+        assert.equal((await t.call(`/api/groups/${t.code}/invites/${a.code}/purge`, {
+            method: 'DELETE', token: t.owner.token, body: {}
+        })).status, 200);
+
+        // 删掉之后列表里就没有它了，记录数从 3 变 2
+        const detail = await (await t.call(`/api/groups/${t.code}`, { token: t.owner.token })).json();
+        assert.equal(detail.invites.length, 2);
+        assert.ok(!detail.invites.some((i) => i.code === a.code), '删掉的那条不该还在');
+
+        // 作废 + 删除之后，这条彻底进不来了
+        const late = await newUser(t.call, '拿删掉的码');
+        assert.equal((await t.call(`/api/groups/${a.code}/join`, { method: 'POST', token: late.token })).status, 404);
+    } finally { await t.close(); }
+});
+
+test('邀请链接：管理页用到的字段都齐（剩余时间 / 状态 / 备注名）', async () => {
+    const t = await inviteSetup();
+    try {
+        const inv = (await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: '3d', label: '给室友' }
+        })).json()).invite;
+        assert.equal(inv.label, '给室友');
+        assert.ok(inv.remainingMs > 0 && inv.remainingMs <= 3 * 86400000);
+        assert.equal(inv.active, true);
+        assert.equal(inv.expired, false);
+        assert.equal(inv.revoked, false);
+
+        // 作废之后状态翻转，remainingMs 仍在（前端要显示「原本还剩多久」）
+        await t.call(`/api/groups/${t.code}/invites/${inv.code}`, {
+            method: 'DELETE', token: t.owner.token, body: {}
+        });
+        const detail = await (await t.call(`/api/groups/${t.code}`, { token: t.owner.token })).json();
+        const after = detail.invites.find((i) => i.code === inv.code);
+        assert.equal(after.active, false);
+        assert.equal(after.revoked, true);
+    } finally { await t.close(); }
+});
+
+// ---------------------------------------------------------------- 换群自己的码
+
+test('换群码：旧码作废、新码可用、成员和群内容一个不动', async () => {
+    const t = await inviteSetup();
+    try {
+        // 先让一个人进来，等会儿验证他不会被这次换码影响
+        const member = await newUser(t.call, '换码前就进群的人');
+        await t.call(`/api/groups/${t.code}/join`, { method: 'POST', token: member.token });
+
+        const r = await t.call(`/api/groups/${t.code}/rotate-code`, { method: 'POST', token: t.owner.token, body: {} });
+        assert.equal(r.status, 200);
+        const out = await r.json();
+        assert.match(out.code, /^\d{8}$/, '新码必须是 8 位');
+        assert.equal(out.oldCode, t.code);
+        assert.notEqual(out.code, t.code);
+
+        // 旧码不能再进人
+        const late = await newUser(t.call, '换码后来的');
+        assert.equal((await t.call(`/api/groups/${t.code}/join`, { method: 'POST', token: late.token })).status, 404,
+            '旧码应当彻底作废');
+
+        // 新码能进人
+        const fresh = await newUser(t.call, '拿新码的人');
+        assert.equal((await t.call(`/api/groups/${out.code}/join`, { method: 'POST', token: fresh.token })).status, 200);
+
+        // 用新码能读到群，且成员都在（换码不该动成员）
+        const detail = await (await t.call(`/api/groups/${out.code}`, { token: t.owner.token })).json();
+        assert.equal(detail.code, out.code);
+        assert.ok(detail.members.some((m) => m.nickname === '换码前就进群的人'), '老成员必须还在');
+        assert.ok(detail.members.some((m) => m.nickname === '拿新码的人'));
+
+        // 老成员照常能看群（他手里的码早就旧了，但成员身份不依赖码）
+        assert.equal((await t.call(`/api/groups/${out.code}`, { token: member.token })).status, 200);
+        // 他的群列表也没丢
+        const mine = await (await t.call('/api/me/groups', { token: member.token })).json();
+        assert.equal(mine.groups.length, 1);
+        assert.equal(mine.groups[0].code, out.code, '群列表里应当给出新码');
+    } finally { await t.close(); }
+});
+
+test('换群码：只有群主能换，成员无权', async () => {
+    const t = await inviteSetup();
+    try {
+        const member = await newUser(t.call, '不是群主');
+        await t.call(`/api/groups/${t.code}/join`, { method: 'POST', token: member.token });
+        assert.equal((await t.call(`/api/groups/${t.code}/rotate-code`, {
+            method: 'POST', token: member.token, body: {}
+        })).status, 403);
+        // 群码没被换掉
+        assert.equal((await (await t.call(`/api/groups/${t.code}`, { token: t.owner.token })).json()).code, t.code);
+    } finally { await t.close(); }
+});
+
+test('换群码：换完之后发新链接、作废旧码，整套仍然顺', async () => {
+    const t = await inviteSetup();
+    try {
+        const out = await (await t.call(`/api/groups/${t.code}/rotate-code`, {
+            method: 'POST', token: t.owner.token, body: {}
+        })).json();
+
+        // 换码后照常能发邀请链接
+        const inv = (await (await t.call(`/api/groups/${out.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: '7d' }
+        })).json()).invite;
+        const u = await newUser(t.call, '走新码的新链接');
+        assert.equal((await t.call(`/api/groups/${inv.code}/join`, { method: 'POST', token: u.token })).status, 200);
+    } finally { await t.close(); }
+});
+
+// ---------------------------------------------------------------- 邀请链接（可多枚、可过期）
+
+/** 起一个干净的实例 + 一个群主 + 一个路人 */
+async function inviteSetup() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-inv-'));
+    const s = await createServer({
+        dataDir: dir, port: 0, skipCleanup: true,
+        limits: { join: { windowMs: 60000, max: 1000, message: 'x' } }
+    });
+    await new Promise((r) => s.listen(0, '127.0.0.1', r));
+    const ra = `http://127.0.0.1:${s.address().port}`;
+    const call = (pathname, opts = {}) => {
+        const headers = {};
+        if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+        if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+        return fetch(ra + pathname, {
+            method: opts.method || 'GET', headers,
+            body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
+        });
+    };
+    const owner = await (await call('/api/register', { method: 'POST', body: { nickname: '票主', password: 'password1' } })).json();
+    const g = await (await call('/api/groups', { method: 'POST', token: owner.token, body: { name: '邀请测试群' } })).json();
+    return {
+        dir, s, ra, call, owner, code: g.code,
+        close: async () => { await new Promise((r) => s.close(r)); fs.rmSync(dir, { recursive: true, force: true }); }
+    };
+}
+
+async function newUser(call, nickname) {
+    return (await call('/api/register', { method: 'POST', body: { nickname, password: 'password1' } })).json();
+}
+
+test('邀请链接：可以同时发多枚，各自的码都能进人', async () => {
+    const t = await inviteSetup();
+    try {
+        const a = await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: '1d', label: '给室友' }
+        })).json();
+        const b = await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: 'never' }
+        })).json();
+
+        assert.match(a.invite.code, /^\d{8}$/);
+        assert.match(b.invite.code, /^\d{8}$/);
+        assert.notEqual(a.invite.code, b.invite.code, '两枚码不能是同一个');
+        assert.equal(a.invite.label, '给室友');
+        assert.ok(a.invite.expiresAt > Date.now(), '1 天的码应当有未来到期时间');
+        assert.equal(b.invite.expiresAt, null, '永久码没有到期时间');
+
+        // 两个不同的码各自都能把人拉进来
+        const u1 = await newUser(t.call, '走第一枚');
+        const u2 = await newUser(t.call, '走第二枚');
+        assert.equal((await t.call(`/api/groups/${a.invite.code}/join`, { method: 'POST', token: u1.token })).status, 200);
+        assert.equal((await t.call(`/api/groups/${b.invite.code}/join`, { method: 'POST', token: u2.token })).status, 200);
+
+        const detail = await (await t.call(`/api/groups/${t.code}`, { token: t.owner.token })).json();
+        assert.deepEqual(detail.members.map((m) => m.nickname).sort(), ['票主', '走第一枚', '走第二枚']);
+    } finally { await t.close(); }
+});
+
+test('邀请链接：过期就不能再进人了（410），但群里的人不受影响', async () => {
+    const t = await inviteSetup();
+    try {
+        const inv = (await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: '1d' }
+        })).json()).invite;
+
+        // 先让一个人正常进来
+        const early = await newUser(t.call, '赶上了');
+        assert.equal((await t.call(`/api/groups/${inv.code}/join`, { method: 'POST', token: early.token })).status, 200);
+
+        // 把这枚码改成「一小时前就过期」，模拟时间流逝（不真等一天）
+        const f = path.join(t.dir, 'groups', `${t.code}.json`);
+        const g = JSON.parse(fs.readFileSync(f, 'utf8'));
+        g.invites.find((i) => i.code === inv.code).expiresAt = Date.now() - 3600000;
+        fs.writeFileSync(f, JSON.stringify(g), 'utf8');
+
+        const late = await newUser(t.call, '来晚了');
+        const r = await t.call(`/api/groups/${inv.code}/join`, { method: 'POST', token: late.token });
+        assert.equal(r.status, 410, '过期码应当 410，而不是静默当成无效码');
+        assert.match((await r.json()).error, /过期/);
+
+        // 已经在群里的人照样能看群
+        assert.equal((await t.call(`/api/groups/${t.code}`, { token: early.token })).status, 200);
+        // 群主自己的永久码也不受影响
+        assert.equal((await t.call(`/api/groups/${t.code}`, { token: t.owner.token })).status, 200);
+    } finally { await t.close(); }
+});
+
+test('邀请链接：群主能作废，作废后进不来；别人无权作废', async () => {
+    const t = await inviteSetup();
+    try {
+        const inv = (await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: 'never' }
+        })).json()).invite;
+
+        const member = await newUser(t.call, '群里的成员');
+        await t.call(`/api/groups/${inv.code}/join`, { method: 'POST', token: member.token });
+
+        // 成员不能作废（也不是群主）
+        assert.equal((await t.call(`/api/groups/${t.code}/invites/${inv.code}`, {
+            method: 'DELETE', token: member.token, body: {}
+        })).status, 403);
+
+        // 群主可以
+        assert.equal((await t.call(`/api/groups/${t.code}/invites/${inv.code}`, {
+            method: 'DELETE', token: t.owner.token, body: {}
+        })).status, 200);
+
+        // 作废后新人不进来
+        const late = await newUser(t.call, '作废后来的');
+        const r = await t.call(`/api/groups/${inv.code}/join`, { method: 'POST', token: late.token });
+        assert.equal(r.status, 410);
+        assert.match((await r.json()).error, /作废/);
+    } finally { await t.close(); }
+});
+
+test('邀请链接：群主自己的码永远有效，改版前的老链接不会失效', async () => {
+    const t = await inviteSetup();
+    try {
+        // 一枚邀请码都没有、也没发过任何新链接时，用群主自己的码（= 群码）照样能进人。
+        // 这正是改版前发出去的链接的形态，不能让它们失效。
+        const u = await newUser(t.call, '拿旧链接的人');
+        assert.equal((await t.call(`/api/groups/${t.code}/join`, { method: 'POST', token: u.token })).status, 200);
+    } finally { await t.close(); }
+});
+
+test('邀请链接：非群主不能发新码；邀请列表对成员只露可用的', async () => {
+    const t = await inviteSetup();
+    try {
+        const member = await newUser(t.call, '普通成员');
+        await t.call(`/api/groups/${t.code}/join`, { method: 'POST', token: member.token });
+
+        // 成员发不了
+        assert.equal((await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: member.token, body: { ttl: '1d' }
+        })).status, 403);
+
+        // 群主发两枚，作废其中一枚
+        const keep = (await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: 'never' }
+        })).json()).invite;
+        const drop = (await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: 'never' }
+        })).json()).invite;
+        await t.call(`/api/groups/${t.code}/invites/${drop.code}`, {
+            method: 'DELETE', token: t.owner.token, body: {}
+        });
+
+        const asOwner = await (await t.call(`/api/groups/${t.code}`, { token: t.owner.token })).json();
+        assert.equal(asOwner.invites.length, 2, '群主看得到两条（含已作废的）');
+        assert.equal(asOwner.ownerCode, t.code);
+        assert.ok(asOwner.invites.some((i) => i.code === drop.code && i.revoked), '作废状态要标出来');
+
+        const asMember = await (await t.call(`/api/groups/${t.code}`, { token: member.token })).json();
+        assert.deepEqual(asMember.invites.map((i) => i.code), [keep.code], '成员只看得到还能用的那枚');
+        assert.equal(asMember.ownerCode, null, '群主自己的码不给成员');
+    } finally { await t.close(); }
+});
+
+test('邀请链接：有效期档位非法就 400，且配额有上限', async () => {
+    const t = await inviteSetup();
+    try {
+        assert.equal((await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: '99y' }
+        })).status, 400);
+
+        // 档位是白名单，全部都能过
+        for (const ttl of Object.keys(INVITE_TTLS)) {
+            const r = await t.call(`/api/groups/${t.code}/invites`, {
+                method: 'POST', token: t.owner.token, body: { ttl }
+            });
+            assert.equal(r.status, 200, `档位 ${ttl} 应当被接受`);
+        }
+
+        // 撞到上限就明确报错，而不是无限发
+        let blocked = null;
+        for (let i = 0; i < 30 && !blocked; i++) {
+            const r = await t.call(`/api/groups/${t.code}/invites`, {
+                method: 'POST', token: t.owner.token, body: { ttl: 'never' }
+            });
+            if (r.status === 400) blocked = r;
+        }
+        assert.ok(blocked, '活跃邀请码应当有数量上限');
+        assert.match((await blocked.json()).error, /最多/);
+    } finally { await t.close(); }
+});
+
+test('邀请链接：过期后群主能换一条新的，新人立刻能进', async () => {
+    const t = await inviteSetup();
+    try {
+        const old = (await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: 'never' }
+        })).json()).invite;
+
+        // 改成已过期
+        const f = path.join(t.dir, 'groups', `${t.code}.json`);
+        const g = JSON.parse(fs.readFileSync(f, 'utf8'));
+        g.invites.find((i) => i.code === old.code).expiresAt = Date.now() - 1000;
+        fs.writeFileSync(f, JSON.stringify(g), 'utf8');
+
+        const fresh = (await (await t.call(`/api/groups/${t.code}/invites`, {
+            method: 'POST', token: t.owner.token, body: { ttl: '7d', label: '新的' }
+        })).json()).invite;
+        assert.notEqual(fresh.code, old.code);
+
+        const u = await newUser(t.call, '拿新链接的人');
+        assert.equal((await t.call(`/api/groups/${fresh.code}/join`, { method: 'POST', token: u.token })).status, 200);
+    } finally { await t.close(); }
+});
+

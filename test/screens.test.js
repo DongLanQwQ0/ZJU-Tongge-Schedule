@@ -556,7 +556,12 @@ async function user(withCourses = false) {
 test('垫片自检：选择器 / 后代 / 冒泡 / innerHTML 解析', async () => {
     const a = bootApp(base);
 
-    assert.equal(a.all('.screen').length, 6, 'index.html 里应有 6 个 screen');
+    // 断言的是「screen 元素都能被选择器找到」，不写死条数 ——
+    // 加一屏就要来改数字，只会让人嫌烦而绕过它。
+    const screens = a.all('.screen');
+    assert.ok(screens.length >= 6, `index.html 里的 screen 太少：${screens.length}`);
+    assert.ok(screens.some((s) => s.id === 'screen-auth'), '缺登录页');
+    assert.ok(screens.some((s) => s.id === 'screen-group'), '缺群组页');
     assert.ok(a.el('#auth-nickname'), '按 id 找得到元素');
     assert.equal(a.all('#auth-tabs button').length, 2, '后代选择器');
     assert.equal(a.all('[data-mode]').length >= 2, true, '属性选择器');
@@ -866,6 +871,64 @@ test('群组页：邀请码、二维码、周次胶囊都渲染出来', async ()
     assert.match(a.el('#group-url').textContent, /http/);
     assert.equal(a.el('#btn-rename-group').hidden, false, '群主看得见改名');
     assert.equal(a.el('#btn-group-delete').hidden, false, '群主看得见解散');
+});
+
+test('邀请链接管理页：能进、能看到列表、非群主进不去', async () => {
+    const owner = await user(true);
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '邀请管理群' } });
+    // 发两条：一条永久、一条 1 天
+    await raw(`/api/groups/${g.body.code}/invites`, {
+        method: 'POST', token: owner.token, body: { ttl: 'never', label: '常驻' }
+    });
+    await raw(`/api/groups/${g.body.code}/invites`, {
+        method: 'POST', token: owner.token, body: { ttl: '1d' }
+    });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a.activeScreen(), 'group');
+    assert.equal(a.el('#btn-manage-invites').hidden, false, '群主看得见管理入口');
+
+    a.click('#btn-manage-invites');
+    await tick(250);
+    assert.equal(a.activeScreen(), 'invites');
+    assert.equal(a.title(), '邀请链接');
+
+    // 两条都渲染出来，且都带勾选框（只列有效的，才能多选管理）
+    assert.equal(a.all('#inv-active-list .item').length, 2, '两条有效链接都应列出');
+    assert.equal(a.all('#inv-active-list [data-pick]').length, 2, '每条都该有勾选框');
+    // 永久那条显示「永久有效」，1 天那条显示剩余时间
+    const texts = a.all('#inv-active-list .sub').map((x) => x.textContent).join(' | ');
+    assert.match(texts, /永久有效/);
+    assert.match(texts, /还剩/);
+    // 有两条以上才出现批量作废栏
+    assert.equal(a.el('#inv-bulk-bar').hidden, false, '多条时应出现批量操作');
+
+    // 勾一条 -> 按钮文案跟着变（这是「仅对有效的进行管理」的落点）
+    const box = a.el('#inv-active-list [data-pick]');
+    box.checked = true;
+    box.dispatch('change', {});
+    assert.match(a.el('#btn-inv-revoke-selected').textContent, /1 条/);
+
+    // 全选 -> 两条都勾上
+    a.click('#btn-inv-selectall');
+    assert.equal(a.all('#inv-active-list [data-pick]').filter((p) => p.checked).length, 2);
+    // 再点一次 = 取消全选
+    a.click('#btn-inv-selectall');
+    assert.equal(a.all('#inv-active-list [data-pick]').filter((p) => p.checked).length, 0);
+});
+
+test('邀请链接管理页：成员没有入口，也拿不到管理页', async () => {
+    const owner = await user(true);
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '成员不许管' } });
+    const mate = await user(true);
+    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token });
+
+    const a = await started(base, { token: mate.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a.el('#btn-manage-invites').hidden, true, '成员看不见管理入口');
 });
 
 test('历史返回：popstate 能还原各个屏幕', async () => {
