@@ -1,0 +1,610 @@
+/* 组团上课网格比对器 —— 移动优先样式 */
+
+/*
+ * 颜色全部走变量，暗色模式只换这一层。
+ * 主题写在 <html data-theme="..."> 上，由 index.html 里的内联脚本在首屏前定好，
+ * 免得先画一帧白的再变色。没写过 data-theme 时跟随系统。
+ */
+:root {
+    color-scheme: light;
+
+    --bg: #f2f2f7;
+    --card: #ffffff;
+    --text: #1c1c1e;
+    --text-2: #8e8e93;
+    --line: #e5e5ea;
+    --blue: #007aff;
+    --c-same: #34c759;
+    --c-nearby: #ffcc00;
+    --c-area: #007aff;
+    --c-cross: #ff3b30;
+    --c-unknown: #8e8e93;
+
+    /* 谁的课：我=深色实线，TA=白色实线。暗色下给「我」补一圈浅色发丝线，
+       否则深色边框落在深色的「只有一人在上」底上会看不见 */
+    --who-me: #1c1c1e;
+    --who-ta: #ffffff;
+    --who-ring-me: transparent;
+    --who-ring-ta: rgba(0, 0, 0, .3);
+
+    /* 中性填充 */
+    --fill-soft: #f8f8fa;     /* 表头、节次列、单人底色 */
+    --fill: #e5e5ea;          /* 次要按钮、徽章、周次胶囊 */
+    --fill-strong: #e9e9ee;   /* 分段控件轨道 */
+    --fill-active: #f7f7fa;   /* 按下 */
+    --me-bg: #f0f8ff;         /* 群组列表里自己那一行 */
+    --field-bg: #ffffff;
+    --field-border: #c7c7cc;
+    --drop-border: #c7c7cc;
+    --chev: #c7c7cc;
+    --segmented-on: #ffffff;
+    --legend-bg: #d1d1d6;     /* 图例色块底：比卡底深一点，深/浅两种边框才都看得见 */
+    --danger-bg: #ffe5e3;
+    --pink: #e8437f;          /* 页脚 CoPig 那行 */
+
+    --ok-bg: #d7f5df;
+    --ok-text: #1d8a3a;
+    --notice-bg: #fff8e1;
+    --notice-border: #ffe08a;
+    --notice-text: #8a6d1b;
+
+    --topbar-bg: rgba(242, 242, 247, .92);
+    --toast-bg: rgba(28, 28, 30, .94);
+    --toast-fg: #ffffff;
+    --chip-total-bg: #1c1c1e;
+    --chip-total-fg: #ffffff;
+
+    --shadow: rgba(0, 0, 0, .05);
+    --shadow-strong: rgba(0, 0, 0, .08);
+
+    --radius: 14px;
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+
+    --bg: #000000;
+    --card: #1c1c1e;
+    --text: #f2f2f7;
+    --text-2: #98989d;
+    --line: #38383a;
+    --blue: #0a84ff;
+    --c-same: #30d158;
+    --c-nearby: #ffd60a;
+    --c-area: #0a84ff;
+    --c-cross: #ff453a;
+    --c-unknown: #8e8e93;
+
+    --who-me: #1c1c1e;
+    --who-ta: #ffffff;
+    --who-ring-me: rgba(255, 255, 255, .5);
+    --who-ring-ta: rgba(0, 0, 0, .35);
+
+    --fill-soft: #2c2c2e;
+    --fill: #2c2c2e;
+    --fill-strong: #2c2c2e;
+    --fill-active: #3a3a3c;
+    --me-bg: rgba(10, 132, 255, .16);
+    --field-bg: #2c2c2e;
+    --field-border: #48484a;
+    --drop-border: #48484a;
+    --chev: #48484a;
+    --segmented-on: #48484a;
+    --legend-bg: #48484a;
+    --danger-bg: rgba(255, 69, 58, .18);
+    --pink: #ff8ab8;
+
+    --ok-bg: rgba(48, 209, 88, .2);
+    --ok-text: #30d158;
+    --notice-bg: #3a2f10;
+    --notice-border: #5c4a17;
+    --notice-text: #ffd60a;
+
+    --topbar-bg: rgba(0, 0, 0, .82);
+    --toast-bg: rgba(242, 242, 247, .96);
+    --toast-fg: #1c1c1e;
+    --chip-total-bg: #f2f2f7;
+    --chip-total-fg: #1c1c1e;
+
+    --shadow: rgba(0, 0, 0, .4);
+    --shadow-strong: rgba(0, 0, 0, .5);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+/* 任何元素上的 hidden 都必须真的隐藏。
+   本文件里大量 class 显式写了 display（.field/.legend/.weeks/.topbar…），
+   作者样式的 display 会盖掉浏览器默认的 [hidden]{display:none}，所以这里统一兜底。 */
+[hidden] { display: none !important; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+    padding-bottom: 32px;
+}
+
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; border: none; background: none; }
+a { color: var(--blue); }
+
+/* ------------------------------------------------------------ 顶栏 */
+
+.topbar {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: var(--topbar-bg);
+    backdrop-filter: saturate(180%) blur(12px);
+    border-bottom: 1px solid var(--line);
+}
+.topbar[hidden] { display: none; }
+.topbar h1 { font-size: 17px; font-weight: 600; flex: 1; }
+.topbar .who { font-size: 12px; color: var(--text-2); }
+.icon-btn {
+    width: 34px; height: 34px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 17px;
+    background: var(--card); color: var(--blue);
+    box-shadow: 0 1px 3px var(--shadow-strong);
+}
+.icon-btn[hidden] { display: none; }
+
+/* ------------------------------------------------------------ 布局 */
+
+main { max-width: 720px; margin: 0 auto; padding: 14px; }
+.screen { display: none; }
+.screen.active { display: block; }
+
+.card {
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 3px var(--shadow);
+}
+.card h2 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+.card h2 .sub { font-weight: 400; color: var(--text-2); font-size: 13px; }
+.muted { color: var(--text-2); font-size: 13px; }
+.tiny { font-size: 12px; color: var(--text-2); }
+.row { display: flex; gap: 10px; }
+.row > * { flex: 1; min-width: 0; }
+.stack > * + * { margin-top: 10px; }
+
+/* ------------------------------------------------------------ 表单 */
+
+label.field { display: block; margin-bottom: 10px; }
+label.field span { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 5px; }
+
+.input {
+    width: 100%; padding: 12px 13px;
+    border: 1px solid var(--field-border); border-radius: 11px;
+    background: var(--field-bg); outline: none; transition: border-color .15s;
+    font-size: 16px;   /* >=16px 防 iOS 聚焦缩放 */
+}
+.input:focus { border-color: var(--blue); }
+.input.invalid { border-color: var(--c-cross); }
+.input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .18em; text-align: center; font-size: 20px; }
+
+.btn {
+    display: block; width: 100%; padding: 13px 16px;
+    border-radius: 12px; font-weight: 600; font-size: 15px;
+    background: var(--blue); color: #fff; text-align: center;
+    transition: opacity .15s;
+}
+.btn:active { opacity: .75; }
+.btn[disabled] { opacity: .45; pointer-events: none; }
+.btn.secondary { background: var(--fill); color: var(--text); }
+.btn.danger { background: var(--danger-bg); color: var(--c-cross); }
+.btn.ghost { background: transparent; color: var(--blue); border: 1px solid var(--line); }
+.btn.small { padding: 9px 13px; font-size: 13px; width: auto; }
+
+/* 分段控件 */
+.segmented { display: flex; background: var(--fill-strong); border-radius: 11px; padding: 3px; margin-bottom: 14px; }
+.segmented button { flex: 1; padding: 9px; border-radius: 9px; font-size: 14px; color: var(--text-2); }
+.segmented button.on { background: var(--segmented-on); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px var(--shadow-strong); }
+
+/* ------------------------------------------------------------ 文件上传 */
+
+.drop {
+    display: block; position: relative; text-align: center;
+    border: 2px dashed var(--drop-border); border-radius: 12px; padding: 12px;
+    transition: border-color .15s, background .15s;
+}
+.drop.active { border-color: var(--blue); background: var(--me-bg); }
+.drop input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.badge {
+    display: inline-block; margin-top: 5px; padding: 2px 9px;
+    border-radius: 10px; font-size: 12px;
+    background: var(--fill); color: var(--text-2);
+}
+.badge.ok { background: var(--ok-bg); color: var(--ok-text); }
+
+/* ------------------------------------------------------------ 新手指引 */
+
+/* 注册页那句「这不是注册什么账号」—— 消除「要填一堆资料」的心理门槛 */
+.onboard {
+    font-size: 13px; line-height: 1.6; color: var(--text-2);
+    background: var(--fill-soft); border-radius: 11px;
+    padding: 11px 13px; margin-bottom: 14px;
+}
+.onboard b { color: var(--text); }
+
+/* ------------------------------------------------------------ 上传状态提示 */
+
+/* 群组页「上传 / 更新我的课表」下面那行 —— 让人知道现在是什么状态 */
+.upload-hint { text-align: center; line-height: 1.5; }
+.upload-hint b { color: var(--text); }
+.upload-hint.busy { color: var(--blue); }
+
+/* ------------------------------------------------------------ 列表 */
+
+.list { border-radius: var(--radius); overflow: hidden; }
+.item {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--card); padding: 14px 16px;
+    border-bottom: 1px solid var(--line); width: 100%; text-align: left;
+}
+.item:last-child { border-bottom: none; }
+.item .grow { flex: 1; min-width: 0; }
+.item .title { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .sub { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+.item .chev { color: var(--chev); font-size: 18px; }
+.item.me { background: var(--me-bg); }
+.item:active { background: var(--fill-active); }
+/* 成员行现在是 div（里面要放「移除」按钮），指针样式得自己给 */
+.item[data-member] { cursor: pointer; }
+/* 备注：中性色，和红色的「移除」区分开。
+   .row-self-note 是「备注自己」那颗（改的是我在群里的名字，不是给别人的），
+   单独一个 class 是为了不被上面 .row-note 的事件绑定顺手套走。 */
+.row-note, .row-self-note {
+    flex: 0 0 auto; font-size: 12px; font-weight: 600;
+    color: var(--blue); background: rgba(0, 122, 255, .1);
+    padding: 6px 10px; border-radius: 9px;
+}
+.row-note:active, .row-self-note:active { background: rgba(0, 122, 255, .2); }
+
+.row-remove {
+    flex: 0 0 auto; font-size: 12px; font-weight: 600;
+    color: var(--c-cross); background: rgba(255, 59, 48, .1);
+    padding: 6px 10px; border-radius: 9px;
+}
+.row-remove:active { background: rgba(255, 59, 48, .2); }
+
+/* 重合课时徽章 */
+.overlap { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.chip-lv {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 7px; border-radius: 8px;
+    font-size: 11px; font-weight: 600; color: #fff;
+}
+.chip-lv.same { background: var(--c-same); }
+.chip-lv.nearby { background: var(--c-nearby); color: #1c1c1e; }
+.chip-lv.area { background: var(--c-area); }
+.chip-lv.cross { background: var(--c-cross); }
+.chip-lv.unknown { background: var(--c-unknown); }
+.chip-lv.total { background: var(--chip-total-bg); color: var(--chip-total-fg); }
+.no-overlap { font-size: 12px; color: var(--text-2); margin-top: 6px; }
+
+/* ------------------------------------------------------------ 周次胶囊 */
+
+.weeks { display: flex; gap: 7px; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: none; }
+.weeks::-webkit-scrollbar { display: none; }
+.weeks button {
+    flex: 0 0 auto; padding: 6px 12px; border-radius: 15px;
+    background: var(--fill); color: var(--text); font-size: 13px; white-space: nowrap;
+    display: flex; flex-direction: column; align-items: center; line-height: 1.25;
+}
+/* 第二行：具体日期 + 年内周次。手机上悬停看不到，所以必须写出来 */
+.weeks button .dt { font-size: 10px; opacity: .65; margin-top: 1px; }
+.weeks button.on .dt { opacity: .9; }
+/* 今天所在的那一周，加一圈描边，切走之后也认得出 */
+.weeks button.week-current { box-shadow: inset 0 0 0 1.5px var(--blue); }
+.weeks button.on { background: var(--blue); color: #fff; font-weight: 600; }
+.weeks button.empty-week { opacity: .45; }
+
+/* 周次旁边的说明：为什么会有「不在常规教学周里」的课 */
+.week-note { margin: 0 0 10px; line-height: 1.5; }
+
+.notice {
+    background: var(--notice-bg); border: 1px solid var(--notice-border); color: var(--notice-text);
+    border-radius: 11px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px;
+}
+.notice[hidden] { display: none; }
+
+/* ------------------------------------------------------------ 图例 */
+
+.legend { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; font-size: 12px; }
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.color-box { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
+.legend-item.parity-note { color: var(--text-2); }
+
+/* ------------------------------------------------------------ 网格 */
+
+.grid-wrap {
+    overflow-x: auto; background: var(--card);
+    border-radius: var(--radius); padding: 8px;
+    box-shadow: 0 1px 3px var(--shadow);
+}
+.schedule { width: 100%; min-width: 780px; border-collapse: collapse; table-layout: fixed; }
+.schedule th, .schedule td {
+    border: 1px solid var(--line); padding: 4px; text-align: center; vertical-align: top;
+}
+.schedule th {
+    background: var(--fill-soft); font-size: 12px; font-weight: 600; padding: 7px 4px;
+}
+/* 屏幕上表头吸顶；导出模板不复用这条规则 */
+.schedule.sticky-head th { position: sticky; top: 0; z-index: 10; }
+.schedule td { min-height: 62px; padding: 4px 3px; font-size: 11px; }
+.schedule .period-col { width: 46px; background: var(--fill-soft); font-size: 11px; font-weight: 600; }
+.schedule .period-col .t { display: block; color: var(--text-2); font-size: 10px; font-weight: 400; }
+
+.course {
+    border-radius: 5px; padding: 4px 5px; text-align: left;
+    line-height: 1.32; word-break: break-word;
+}
+.course + .course { margin-top: 3px; }
+.course .tag { font-weight: 700; font-size: 10px; opacity: .92; }
+.course .name { font-weight: 600; }
+.course .loc { display: block; font-size: 10px; opacity: .92; margin-top: 1px; }
+.course .parity {
+    display: inline-block; font-size: 9px; font-weight: 700;
+    padding: 0 4px; border-radius: 5px; margin-right: 3px;
+    background: rgba(255, 255, 255, .3);
+}
+.course .parity.dark { background: rgba(0, 0, 0, .13); }
+
+/* ------------------------------------------------------------ 谁是谁
+   背景色表示「两人的地点关系」，边框颜色表示「这是谁的课」。
+   我的：深色实线；TA 的：白色实线 + 一圈深色发丝线
+   （否则在白/黄底上白色边框会糊掉）。 */
+.course.who-me { border: 2px solid var(--who-me); box-shadow: 0 0 0 1px var(--who-ring-me); }
+.course.who-ta {
+    border: 2px solid var(--who-ta);
+    box-shadow: 0 0 0 1px var(--who-ring-ta);
+}
+.course.who-ta .tag { opacity: 1; }
+.course.who-ta:not(.bg-single) .tag { color: var(--who-me); }
+.course.who-me .tag { opacity: 1; }
+
+/* 一格内上下两半：上半永远是我，下半永远是 TA */
+.half + .half { margin-top: 4px; }
+.pair + .pair { margin-top: 6px; }
+
+.bg-same { background: var(--c-same); color: #fff; }
+.bg-nearby { background: var(--c-nearby); color: #1c1c1e; }
+.bg-area { background: var(--c-area); color: #fff; }
+.bg-cross { background: var(--c-cross); color: #fff; }
+.bg-unknown { background: var(--c-unknown); color: #fff; }
+/* 只有一个人上课：底色变浅，具体是谁看边框 */
+.bg-single { background: var(--fill-soft); }
+
+.stats-line { font-size: 12px; color: var(--text-2); text-align: center; margin: 8px 0 0; }
+
+/* ------------------------------------------------------------ 邀请码 */
+
+.invite { text-align: center; }
+.invite .code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* 8 位邀请码要能在 390px 宽的屏幕上排进一行 */
+    font-size: clamp(26px, 8.5vw, 38px); font-weight: 700; letter-spacing: .1em;
+    margin: 6px 0 10px; user-select: all;
+}
+.invite .qr { display: inline-block; padding: 10px; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
+.invite .qr svg, .invite .qr img { display: block; width: 168px; height: 168px; }
+
+/* ------------------------------------------------------------ 模态 */
+
+.modal {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(0, 0, 0, .78);
+    display: grid; place-items: center; padding: 20px;
+}
+.modal[hidden] { display: none; }
+.modal .inner { background: var(--card); border-radius: 18px; padding: 22px; text-align: center; max-width: 340px; }
+.modal .inner .code { font-family: ui-monospace, Menlo, monospace; font-size: 30px; font-weight: 700; letter-spacing: .12em; margin: 8px 0 14px; }
+.modal .inner svg, .modal .inner img { width: min(70vw, 260px); height: min(70vw, 260px); }
+
+/* ------------------------------------------------------------ 内测提示 */
+
+#beta-modal .inner.beta { max-width: 360px; padding: 26px 22px 20px; }
+#beta-modal .beta-emoji { font-size: 40px; line-height: 1; margin-bottom: 10px; }
+#beta-modal h2 { font-size: 18px; margin-bottom: 14px; }
+#beta-modal p { font-size: 14px; line-height: 1.65; margin-bottom: 10px; text-align: left; }
+#beta-modal p.tiny { font-size: 12px; color: var(--text-2); margin-bottom: 18px; text-align: left; }
+#beta-modal .btn { width: 100%; }
+
+/* ------------------------------------------------------------ 页脚 */
+
+/* 整页最底下的一条署名带，左右各一只吉祥物夹着文字。
+   两边各给一个固定宽的坑：换图时不管换到哪张，文字都不会左右跳。
+   透明度压一点，免得抢课表的注意力。 */
+.site-foot {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    margin-top: 26px; padding: 18px 2px 30px;
+    border-top: 1px solid var(--line);
+}
+.foot-slot {
+    /* 窄屏收窄，别把中间那三行字挤到换行（375px 上两个坑共约 135px） */
+    flex: 0 0 auto; width: clamp(56px, 18vw, 92px);
+    display: flex; align-items: center; justify-content: center;
+}
+.foot-lines { text-align: center; min-width: 0; }
+.foot-sign { font-size: 13px; font-weight: 600; color: var(--text-2); letter-spacing: .4px; }
+.foot-sub { font-size: 12px; line-height: 1.5; color: var(--text-2); opacity: .72; }
+.foot-sub + .foot-sub { margin-top: 2px; }
+.foot-sub s { opacity: .75; }
+.foot-copig { color: var(--pink); font-weight: 700; }
+.foot-mascot { max-height: clamp(38px, 12vw, 52px); max-width: 100%; opacity: .85; }
+/* 整张铺满、没透明背景的那种（深炸梗图）：圆角当贴纸，别像块贴歪的方块。
+   有透明通道的图四角本来就什么都没有，加了也不影响。 */
+.foot-mascot.tile { border-radius: 9px; opacity: .72; }
+
+/* ------------------------------------------------------------ 导出 .ics 引导 */
+
+.link-btn {
+    display: block; margin-top: 10px; padding: 0;
+    color: var(--blue); font-size: 13px; text-decoration: underline;
+    text-underline-offset: 3px;
+}
+.link-btn.inline { display: inline-block; margin: 0 0 0 8px; font-weight: 400; }
+/* button 就算写了 display:block 也是「按内容收窄」的（按钮按 replaced 元素算宽度），
+   所以 text-align 单独用一点效果都没有 —— 得用 auto 外边距把这一整块自己居中。 */
+.link-btn.center { margin-left: auto; margin-right: auto; text-align: center; }
+
+#ics-modal .inner {
+    text-align: left; max-width: 400px;
+    max-height: 88vh; overflow-y: auto;
+}
+#ics-modal h2 { font-size: 17px; margin-bottom: 4px; }
+#ics-modal ol { margin: 12px 0 0; padding-left: 22px; font-size: 14px; line-height: 1.75; }
+#ics-modal ol b { color: var(--blue); }
+/* 弹窗里的外链：给条底线，手机上才看得出能点 */
+#ics-modal a { text-decoration: underline; text-underline-offset: 2px; }
+#ics-modal .ics-links { margin-top: 12px; text-align: center; }
+#ics-modal .ics-links .sep { opacity: .5; margin: 0 4px; }
+/* 截图是深色界面，给个深色底免得加载时闪白 */
+#ics-modal img {
+    display: block; width: 100%; height: auto; margin-top: 14px;
+    border-radius: 10px; border: 1px solid var(--line); background: #000;
+}
+
+/* ------------------------------------------------------------ Toast */
+
+#toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translate(-50%, 20px);
+    background: var(--toast-bg); color: var(--toast-fg);
+    padding: 11px 18px; border-radius: 12px; font-size: 14px;
+    max-width: 86vw; text-align: center; z-index: 200;
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.err { background: rgba(255, 59, 48, .96); }
+
+/* ------------------------------------------------------------ 导出离屏容器 */
+
+#export-host {
+    position: absolute; left: -9999px; top: 0;
+    background: var(--bg); padding: 20px;
+}
+#export-host .export-title { text-align: center; margin-bottom: 4px; }
+#export-host .export-title h1 { font-size: 20px; }
+#export-host .export-title p { font-size: 12px; color: var(--text-2); margin-bottom: 12px; }
+#export-host .legend { margin-bottom: 12px; }
+
+/* ------------------------------------------------------------ 大屏（电脑端） */
+
+/*
+ * 手机上 720px 的窄栏够用，但一张 7 列的课表塞不下：.schedule 的 min-width 是 780px，
+ * 结果在电脑上也得左右拖。这里把「承载课表的两个页面」整体放宽，让整张表一次看全。
+ *
+ * 用 :has() 只对课表页生效 —— 首页/登录页保持窄栏，不会被拉成一条。
+ * 不支持 :has() 的浏览器直接沿用窄栏，功能不受影响。
+ */
+@media (min-width: 1000px) {
+    body:has(#screen-compare.active) main,
+    body:has(#screen-local.active) main { max-width: 1280px; }
+
+    /* 格子变宽了，字号和内边距跟着松一点，课名与地点不用挤成两行。
+       全部限定在 main 之内：#export-host 是 main 的兄弟节点，
+       否则导出图的疏密会随「导出时浏览器窗口多宽」变化，同一份比对导出两次还不一样。 */
+    main .schedule .period-col { width: 56px; }
+    main .schedule th { font-size: 13px; padding: 9px 6px; }
+    main .schedule td { padding: 6px 5px; font-size: 12px; }
+    main .course { padding: 5px 7px; }
+    main .course .tag { font-size: 11px; }
+    main .course .loc { font-size: 11px; }
+}
+
+/* ------------------------------------------------------------ 动效 */
+
+/*
+ * 只做「切换」和「出现」两类过渡，不做循环或装饰性动画 —— 这是个用来查课表的
+ * 工具，动效的目标是让人看清「界面变了」，不是让人看动画。
+ *
+ * 两条硬约束：
+ *  1. 课表格子（.course）本身不参与动画。行数多，逐格淡入只会让表格显得卡。
+ *  2. .screen 只淡入、不做位移。位移会在屏幕上产生 transform，而带 transform 的
+ *     祖先会改变 sticky 的参照，表头吸顶会受影响。位移交给里面的 .card。
+ */
+
+@keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes rise-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+}
+@keyframes pop-in {
+    from { opacity: 0; transform: scale(.94); }
+    to   { opacity: 1; transform: none; }
+}
+@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .4 } }
+
+/* 切页 */
+.screen.active { animation: fade-in .18s ease-out backwards; }
+
+/* 卡片上浮。nth-of-type 是近似值（屏幕里还有别的 div），差一档无所谓。
+   fill-mode 用 backwards 而不是 both：延迟期间保持透明（不会闪一下），
+   动画放完就回到元素自身的样式，不会给每张卡片留下一个恒定的 transform
+   —— 带 transform 的元素会成为 fixed/absolute 后代的包含块，埋雷。 */
+.screen.active .card { animation: rise-in .24s ease-out backwards; }
+.screen.active .card:nth-of-type(2) { animation-delay: .04s; }
+.screen.active .card:nth-of-type(3) { animation-delay: .08s; }
+.screen.active .card:nth-of-type(4) { animation-delay: .12s; }
+
+/* 弹窗：背景淡入 + 内容弹一下 */
+.modal { animation: fade-in .16s ease-out backwards; }
+.modal .inner { animation: pop-in .22s cubic-bezier(.2, .9, .3, 1.25) backwards; }
+
+/* 课表容器出现（本地比对页是解除 hidden 时才跑） */
+.grid-wrap { animation: fade-in .22s ease-out backwards; }
+
+.spinner { animation: pulse 1.3s ease-in-out infinite; }
+
+/* 按下的手感 */
+.btn, .icon-btn, .weeks button, .item, .row-remove, .segmented button {
+    transition: transform .12s ease, background-color .16s ease,
+                color .16s ease, opacity .16s ease, border-color .16s ease;
+}
+.btn:active, .icon-btn:active, .weeks button:active,
+.row-remove:active, .segmented button:active { transform: scale(.97); }
+.item[data-member]:active { transform: scale(.995); }
+
+/* 导出保险丝 —— 必须留在所有动效规则之后。
+   html2canvas 拍的是同一份 DOM，任何动画/过渡都可能被拍成中间帧
+   （比如 opacity 还停在 .3 的淡入），导出的图就花了。 */
+#export-host, #export-host * {
+    animation: none !important;
+    transition: none !important;
+}
+
+/* 系统开了「减弱动态效果」就整个关掉 */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+    }
+}
+
+/* ------------------------------------------------------------ 群组设置 */
+
+#group-settings-card .field:last-of-type { margin-bottom: 0; }
+#group-requests .item .grow { min-width: 0; }
+#group-requests .row-ok {
+    flex: 0 0 auto; font-size: 12px; font-weight: 600;
+    color: var(--ok-text); background: var(--ok-bg);
+    padding: 6px 10px; border-radius: 9px;
+}
+#group-requests .row-no {
+    flex: 0 0 auto; font-size: 12px; color: var(--text-2);
+    padding: 6px 8px; border-radius: 9px;
+}
+
+/* ------------------------------------------------------------ 空态 */
+
+.empty { text-align: center; padding: 26px 12px; color: var(--text-2); font-size: 14px; }
+.spinner { text-align: center; padding: 30px; color: var(--text-2); font-size: 14px; }

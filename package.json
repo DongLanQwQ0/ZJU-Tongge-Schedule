@@ -1,0 +1,13 @@
+{
+  "name": "group-class-comparator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "组团上课网格比对器（群组版）—— 局域网 Node 服务 + 纯前端，零 npm 依赖",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
