@@ -25,6 +25,7 @@
     <button class="icon-btn" id="btn-back" hidden title="返回">‹</button>
     <h1 id="topbar-title">组团上课</h1>
     <span class="who" id="topbar-who"></span>
+    <button class="icon-btn" id="btn-admin" title="管理" hidden>🛠</button>
     <button class="icon-btn" id="btn-theme" title="切换深色 / 浅色">🌙</button>
     <button class="icon-btn" id="btn-logout" title="退出登录">⎋</button>
 </header>
@@ -40,30 +41,36 @@
     </div>
 
     <div class="card">
-        <div class="segmented" id="auth-tabs">
-            <button data-mode="login" class="on">登录</button>
-            <button data-mode="register">注册</button>
-        </div>
+        <!-- 包在 form 里：密码框不在 form 内浏览器认不出这是登录表单
+             （密码管理器不工作，Chrome 还会控制台警告），顺带白拿一个回车提交 -->
+        <form id="auth-form" novalidate>
+            <div class="segmented" id="auth-tabs">
+                <button type="button" data-mode="login" class="on">登录</button>
+                <button type="button" data-mode="register">注册</button>
+            </div>
 
-        <div class="onboard" id="auth-tip" hidden>
-            <b>这不是注册什么账号</b> —— 只是起个名字，
-            让同学知道这份课表是谁的。不用邮箱，也不用手机号。
-        </div>
+            <div class="onboard" id="auth-tip" hidden>
+                <b>这不是注册什么账号</b> —— 只是起个名字，
+                让同学知道这份课表是谁的。不用邮箱，也不用手机号。
+            </div>
 
-        <label class="field">
-            <span>昵称</span>
-            <input class="input" id="auth-nickname" maxlength="10" placeholder="群里显示的名字" autocomplete="username">
-        </label>
-        <label class="field">
-            <span>密码</span>
-            <input class="input" id="auth-password" type="password" placeholder="自己设一个，至少 6 位" autocomplete="current-password">
-        </label>
-        <label class="field" id="auth-confirm-field" hidden>
-            <span>确认密码</span>
-            <input class="input" id="auth-confirm" type="password" placeholder="再输一次" autocomplete="new-password">
-        </label>
+            <label class="field">
+                <span>昵称</span>
+                <input class="input" id="auth-nickname" name="username" maxlength="10" placeholder="群里显示的名字" autocomplete="username">
+            </label>
+            <label class="field">
+                <span>密码</span>
+                <input class="input" id="auth-password" name="password" type="password" placeholder="自己设一个，至少 6 位" autocomplete="current-password">
+            </label>
+            <label class="field" id="auth-confirm-field" hidden>
+                <span>确认密码</span>
+                <input class="input" id="auth-confirm" name="confirm" type="password" placeholder="再输一次" autocomplete="new-password">
+            </label>
 
-        <button class="btn" id="auth-submit">登录</button>
+            <p class="form-err" id="auth-error" hidden></p>
+
+            <button class="btn" id="auth-submit" type="submit">登录</button>
+        </form>
     </div>
 </section>
 

@@ -145,7 +145,7 @@ a { color: var(--blue); }
 }
 .topbar[hidden] { display: none; }
 .topbar h1 { font-size: 17px; font-weight: 600; flex: 1; }
-.topbar .who { font-size: 12px; color: var(--text-2); }
+.topbar .who { font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28vw; }
 .icon-btn {
     width: 34px; height: 34px; border-radius: 50%;
     display: grid; place-items: center; font-size: 17px;
@@ -443,6 +443,16 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 /* 整张铺满、没透明背景的那种（深炸梗图）：圆角当贴纸，别像块贴歪的方块。
    有透明通道的图四角本来就什么都没有，加了也不影响。 */
 .foot-mascot.tile { border-radius: 9px; opacity: .72; }
+
+/* ------------------------------------------------------------ 表单内联错误 */
+
+/* 登录失败的提示留在表单里，不靠三秒就消失的 toast */
+.form-err {
+    margin-bottom: 10px; padding: 9px 11px;
+    font-size: 12px; line-height: 1.5;
+    color: var(--c-cross); background: var(--danger-bg);
+    border-radius: 10px;
+}
 
 /* ------------------------------------------------------------ 管理页 */
 

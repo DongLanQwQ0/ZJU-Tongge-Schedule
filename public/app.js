@@ -146,6 +146,8 @@
         $('#topbar-title').textContent = opts.title || '组团上课';
         $('#topbar-who').textContent = state.me ? state.me.nickname : '';
         $('#btn-logout').hidden = !state.me;
+        // 管理入口挂在顶栏上，任何页面都够得着；普通人看不到这个按钮
+        $('#btn-admin').hidden = !(state.me && state.me.admin);
         window.scrollTo(0, 0);
     }
 
@@ -262,6 +264,20 @@
 
     var authMode = 'login';
 
+    /** 把错误直接摆在表单里。传空串就清掉 */
+    function authError(msg) {
+        var el = $('#auth-error');
+        el.textContent = msg || '';
+        el.hidden = !msg;
+    }
+
+    function clearAuthMarks() {
+        authError('');
+        ['#auth-nickname', '#auth-password', '#auth-confirm'].forEach(function (sel) {
+            $(sel).classList.remove('invalid');
+        });
+    }
+
     function initAuth() {
         $('#auth-tabs').addEventListener('click', function (e) {
             var btn = e.target.closest('button[data-mode]');
@@ -273,32 +289,61 @@
             $('#auth-tip').hidden = !isReg;
             $('#auth-submit').textContent = isReg ? '注册并登录' : '登录';
             $('#auth-password').setAttribute('autocomplete', isReg ? 'new-password' : 'current-password');
+            clearAuthMarks();
         });
 
-        $('#auth-submit').addEventListener('click', doAuth);
-        $('#auth-password').addEventListener('keydown', function (e) { if (e.key === 'Enter') doAuth(); });
-        $('#auth-confirm').addEventListener('keydown', function (e) { if (e.key === 'Enter') doAuth(); });
+        // 回车提交交给 form 自己处理，不用逐个 input 挂 keydown
+        $('#auth-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+            doAuth();
+        });
+
+        // 一开始重新输入就把上一次的红字擦掉，别让它一直杵在那
+        ['#auth-nickname', '#auth-password', '#auth-confirm'].forEach(function (sel) {
+            $(sel).addEventListener('input', function () {
+                $(sel).classList.remove('invalid');
+                authError('');
+            });
+        });
     }
 
     async function doAuth() {
-        var nickname = $('#auth-nickname').value.trim();
-        var password = $('#auth-password').value;
-        var confirm = $('#auth-confirm').value;
+        var nickEl = $('#auth-nickname');
+        var pwEl = $('#auth-password');
+        var confirmEl = $('#auth-confirm');
+        var nickname = nickEl.value.trim();
+        var password = pwEl.value;
+        var confirm = confirmEl.value;
         var btn = $('#auth-submit');
+        var isReg = authMode === 'register';
 
-        $('#auth-nickname').classList.toggle('invalid', !NICK_RE.test(nickname));
-        if (!NICK_RE.test(nickname)) return toast('昵称 1–10 个字，不能含 / \\ : * ? " < > |', true);
-        if (password.length < 6) { $('#auth-password').classList.add('invalid'); return toast('密码至少 6 位', true); }
-        if (authMode === 'register' && password !== confirm) return toast('两次输入的密码不一样', true);
+        clearAuthMarks();
+
+        if (!NICK_RE.test(nickname)) {
+            nickEl.classList.add('invalid');
+            nickEl.focus();
+            return authError('昵称 1–10 个字，不能含 / \\ : * ? " < > |');
+        }
+        if (password.length < 6) {
+            pwEl.classList.add('invalid');
+            pwEl.focus();
+            return authError('密码至少 6 位');
+        }
+        if (isReg && password !== confirm) {
+            confirmEl.classList.add('invalid');
+            confirmEl.focus();
+            return authError('两次输入的密码不一样');
+        }
 
         btn.disabled = true;
+        btn.textContent = isReg ? '注册中…' : '登录中…';
         try {
-            var r = authMode === 'register'
+            var r = isReg
                 ? await API.register(nickname, password)
                 : await API.login(nickname, password);
             API.setToken(r.token);
             state.me = await API.me();
-            toast(authMode === 'register' ? '注册成功，欢迎！' : '欢迎回来，' + state.me.nickname);
+            toast(isReg ? '注册成功，欢迎！' : '欢迎回来，' + state.me.nickname);
             await goHome({ replace: true });   // 登录页不该能后退回去
             if (state.pendingCode) {
                 var code = state.pendingCode;
@@ -306,9 +351,23 @@
                 await joinByCode(code);
             }
         } catch (e) {
+            // 具体原因留在表单里（toast 三秒就没了，容易错过）
+            authError(e.message);
             toast(e.message, true);
+            if (e.status === 401) {
+                // 密码清掉并聚焦，省得对着同一个错密码反复试
+                pwEl.classList.add('invalid');
+                pwEl.value = '';
+                pwEl.focus();
+            } else if (e.status === 429) {
+                // 被节流了，提示改个说法免得让人以为密码错了
+                authError(e.message);
+            } else if (e.status === 0) {
+                authError('连不上服务器，检查一下是不是同一个 WiFi');
+            }
         } finally {
             btn.disabled = false;
+            btn.textContent = isReg ? '注册并登录' : '登录';
         }
     }
 
@@ -662,6 +721,7 @@
         $('#btn-logout').addEventListener('click', logout);
         $('#btn-local').addEventListener('click', function () { show('local', { title: '本地快速比对', back: goHome }); initLocalOnce(); });
         $('#btn-open-admin').addEventListener('click', function () { openAdmin(); });
+        $('#btn-admin').addEventListener('click', function () { openAdmin(); });
         $('#admin-user-filter').addEventListener('input', function (e) {
             renderAdminUsers(e.target.value.trim());
         });

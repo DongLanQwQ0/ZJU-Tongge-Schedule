@@ -83,7 +83,10 @@
         if (!res.ok) {
             var err = new Error((data && data.error) || ('请求失败（' + res.status + '）'));
             err.status = res.status;
-            if (res.status === 401 && token) {
+            // 登录/注册自己返回的 401 是「密码不对」，不是「会话过期」——
+            // 别让它触发 onUnauthorized，否则会弹一句莫名其妙的「登录状态过期了」
+            var isAuthCall = /^\/api\/(login|register)$/.test(path);
+            if (res.status === 401 && token && !isAuthCall) {
                 setToken('');
                 if (onUnauthorized) onUnauthorized(err);
             }
