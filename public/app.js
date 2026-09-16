@@ -490,6 +490,10 @@
         try {
             state.admin = await API.adminOverview();
         } catch (e) {
+            // 401 已经由 onUnauthorized 统一处理（跳登录页）。
+            // 这里再 fallbackHome() 会把人从登录页又拽回一个「已登出」的首页 ——
+            // 全量测试里就是这么抓出来的。
+            if (e.status === 401) return;
             toast(e.message, true);
             return fallbackHome();
         }
