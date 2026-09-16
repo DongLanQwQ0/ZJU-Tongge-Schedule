@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------- 构建上下文
+#
+# 原则：只把「跑起来需要的东西」送进构建上下文。
+# 这个仓库根目录有真实课表（含同学真名），绝不能进镜像。
+
+# 真实课表 —— 与 .gitignore 同样的理由，这里是第二道闸
+*.ics
+
+# 开发与版本控制
+.git
+.gitignore
+.gitattributes
+test/
+docs/
+node_modules/
+
+# 编辑器与系统
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 日志与临时文件
+*.log
+*.tmp
+*.corrupt-*
+
+# 打包产物本身
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+entrypoint.sh
+
+# ⚠️ 注意：data/ **不能**排除在这里。
+#    需求是把现有数据一起打进镜像，所以 data/ 必须留在上下文里。
+#    代价是镜像里会有密码哈希和会话令牌 —— 详见 README 的部署说明，
+#    这个镜像**不要**推到公开仓库。

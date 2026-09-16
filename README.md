@@ -157,6 +157,10 @@ data/              运行时生成：users.json / sessions.json / groups/*.json
                     users/sessions 会额外留一份 .bak，损坏时自动恢复
 test/              node --test，含一组安全回归（穿越矩阵、限流、415/413、响应头）
 docs/              设计文档
+Dockerfile         node:22-alpine 镜像；把 data/ 作为种子烧进 /opt/seed
+docker-compose.yml 一条命令起服务，数据落在命名卷 tongge-data
+entrypoint.sh      首次启动把种子铺到数据卷（已有数据则绝不覆盖）
+.dockerignore      挡住真实课表；明确放行 data/
 ```
 
 ## 安全上的几个决定
@@ -196,3 +200,95 @@ docs/              设计文档
 - 全站接口另有 600 次/分钟的 IP 限流，注册 40 次/小时。阈值放得很宽，正常使用碰不到。
 - 请求体上限 1MB；**超限时会先把多余的部分读完再回 413**（4 倍以内），
   这样客户端收得到明确提示，而不是稀里糊涂地「连接被重置」。
+
+## 部署到服务器（Docker）
+
+镜像是 `node:22-alpine`，零依赖所以**不跑 `npm install`**，构建只有几秒。
+现有 `data/`（账号、群组、会话、审计）会被打进镜像，首次启动铺到数据卷。
+
+```bash
+# 1. 构建 + 启动
+docker compose up -d --build
+
+# 2. 看启动横幅（会打印同学该访问的地址）
+docker compose logs -f tongge
+
+# 3. 访问
+#    http://<服务器IP>:3000
+```
+
+不用 compose 也可以：
+
+```bash
+docker build -t tongge:1.0 .
+docker run -d --name tongge -p 3000:3000 -v tongge-data:/app/data tongge:1.0
+```
+
+### 数据怎么放
+
+镜像自带的 `data/` 放在 `/opt/seed`，运行期数据在 `/app/data`（命名卷 `tongge-data`）。
+`entrypoint.sh` 负责把前者铺到后者，**且只铺一次**：
+
+| 场景 | 行为 |
+|---|---|
+| 首次启动，卷是空的 | 铺入种子：18 个账号、5 个群组、40 个会话都带过来 |
+| 容器重启 / 换镜像版本 | **跳过铺入**，同学新传的课表与账号一个不动 |
+| 卷里只有 `groups/` | 认作「已有数据」，同样跳过 |
+| 卷里是个空目录 | 认作首次启动，照常铺入 |
+
+判断依据是 `users.json` / `sessions.json` 是否存在，或 `groups/` 里有没有文件 ——
+不是「目录是否为空」，免得被 `lost+found` 之类的东西误判。
+
+**想干净上线**（不带任何活跃登录态）就用：
+
+```bash
+docker build -t tongge:1.0 --build-arg INCLUDE_SESSIONS=false .
+```
+
+这样账号和群组照旧，只是所有人需要重新登录一次。
+
+### ⚠️ 这个镜像里有凭据
+
+`data/` 里是**密码哈希**，`sessions.json` 里是**明文会话令牌**。所以：
+
+- **不要推到公开仓库**（Docker Hub 免费账户的私有仓库只给一个，也够用；
+  更稳妥是内网 registry 或 `docker save` 传文件）。
+- 谁拿到这个镜像，谁就拿到了所有账号的登录态 —— 等同于拿到了站点。
+- 要交给别人构建时，用 `--build-arg INCLUDE_SESSIONS=false` 至少去掉活跃令牌。
+
+### ⚠️ 放到公网前请想清楚
+
+项目定位是**「认识的人之间、同一个局域网自用」**，这套限流阈值是按这个前提定的。
+一旦映射到公网（或公网能访问的服务器），前提就不成立了：
+
+- 密码与令牌走 **HTTP 明文**。公网上必须套一层反向代理加 HTTPS，
+  否则同链路上任何人抓到令牌就等于拿到账号。
+- 入群接口 20 次/分钟、全局 600 次/分钟是**按 IP** 的。
+  公网上攻击者换 IP 的成本很低，8 位邀请码「枚举要上百年」的结论不再成立。
+- 「任何人都能注册账号」在公网意味着会被批量灌号（虽有同 IP 集中注册标注，
+  但只标注、不拦截）。
+
+**建议**：要么只在内网/`--network host` 下用，要么前面挂 Nginx/Caddy
+（做 HTTPS + 真实 IP 传递 + 更严的限流），并考虑加一道站点访问口令。
+
+### 容器里的两个已知现象
+
+- **启动横幅会显示「未检测到局域网地址」**。这是正常的：容器里只有 `eth0`（172.x），
+  没有可供同学连的网卡。**用 `-p 3000:3000` 映射到宿主机**，把宿主机 IP 发给同学即可。
+  页面上「复制链接」拿到的可能仍是 `localhost`，需要手工把地址换成宿主机 IP。
+- **平台差异**：Linux 上想让容器直接拿局域网 IP，可以加 `--network host`；
+  macOS / Windows 的 Docker Desktop 不支持 `host` 网络，只能靠端口映射。
+
+### 备份
+
+数据全在卷里，冷备一条命令：
+
+```bash
+docker run --rm -v tongge-data:/data -v "$PWD:/backup" alpine \
+  tar czf /backup/tongge-$(date +%Y%m%d).tar.gz -C /data .
+```
+
+恢复：把 tar 解开到卷里，**先 `docker compose stop`**，再起。
+另外程序本身每次写 `users.json` / `sessions.json` 都会留 `.bak`，
+文件损坏时会自动从 `.bak` 恢复 —— 但那是防「写坏」，不防「误删」，两者都要有。
+

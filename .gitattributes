@@ -1,0 +1,20 @@
+# 行尾规则。
+#
+# 为什么需要这个文件：本机 core.autocrlf=true，`entrypoint.sh` 一旦在
+# Windows 上 checkout 成 CRLF，进 Linux 容器就会以
+# `/usr/local/bin/entrypoint.sh: not found` 失败 —— 报错信息完全指向不了真正原因。
+# 所以这里把 shell 脚本钉死成 LF，与 checkout 环境无关。
+
+*.sh   text eol=lf
+*.bash text eol=lf
+Dockerfile text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+
+# 二进制资源别碰
+*.gif  binary
+*.png  binary
+*.jpg  binary
+*.woff2 binary
+*.ics  binary

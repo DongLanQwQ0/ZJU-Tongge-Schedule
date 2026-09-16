@@ -5,7 +5,12 @@
   "description": "同格 · 找个课搭子一起上课 —— 局域网 Node 服务 + 纯前端，零 npm 依赖",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "docker:build": "docker build -t tongge:1.0 .",
+    "docker:build:clean": "docker build -t tongge:1.0 --build-arg INCLUDE_SESSIONS=false .",
+    "docker:up": "docker compose up -d --build",
+    "docker:logs": "docker compose logs -f tongge",
+    "docker:down": "docker compose down"
   },
   "engines": {
     "node": ">=18"
