@@ -18,6 +18,18 @@ const PUBLIC = path.join(__dirname, 'public');
 const SHARED = path.join(__dirname, 'shared');
 const DATA = path.join(__dirname, 'data');
 const MAX_BODY = 1024 * 1024;          // 1 MB
+/**
+ * 超限后还愿意读掉多少字节。
+ *
+ * 为什么要多读：如果一超限就回 413 并关连接，客户端多半**收不到**那个 413 ——
+ * 它还在往外写，内核直接回 RST，抓到的就是 ECONNRESET，
+ * 于是页面只能提示「连不上服务器」，完全猜不到是内容太大。
+ * 实测（见测试）：早断和读完再回，客户端拿到的东西完全不同。
+ *
+ * 但不能无限读（那等于把内存/带宽白送给攻击者），所以给个上限：
+ * 4 倍以内读完再好好回 413，再多就直接掐断。
+ */
+const MAX_DRAIN = 4 * MAX_BODY;
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCK_MS = 60 * 1000;
 
@@ -36,34 +48,124 @@ const MIME = {
 
 // ---------------------------------------------------------------- 小工具
 
+/**
+ * 所有响应都该带上的安全头。
+ *
+ * 这一份是唯一来源 —— 以前 send() 和 sendFile() 各自 writeHead，
+ * 加头就得记得改两处，早晚会漏。现在统一从这里拼。
+ *
+ * CSP 说明：index.html 有一段内联主题脚本（首屏防闪白）、正文里有大量
+ * style="…" 内联属性，所以 script-src / style-src 只能放行 'unsafe-inline'。
+ * 剩下的约束仍有价值：挡掉外部脚本注入、限制外连与嵌套。
+ */
+const SEC_HEADERS = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Content-Security-Policy': [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "connect-src 'self'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+        "object-src 'none'"
+    ].join('; ')
+};
+
+/** 超限的请求体：错误对象上带一个标记，路由层据此知道响应已经发过了 */
+function tooLarge() {
+    const e = fail(413, '请求内容太大了');
+    e.bodySent = true;
+    return e;
+}
+
+/**
+ * 非正常响应的**唯一出口**（403 / 404 / 405 / 413 / 4xx / 5xx）。
+ *
+ * 两条规矩：
+ *  1. 一律带上安全头 —— 出错也不能把 nosniff / frame-ancestors 弄丢。
+ *  2. 只透传**我们自己的**业务文案（fail() 造出来的，带 e.status）。
+ *     其余（比如 fs 抛的 EISDIR、ENOENT）一律换成固定文案 ——
+ *     那些原文会把 errno 甚至你电脑上的绝对路径念给攻击者听。
+ *     细节只留在服务端日志里。
+ */
+function sendDenial(res, status, message, extraHeaders) {
+    const body = JSON.stringify({ error: message });
+    res.writeHead(status, Object.assign({
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(body),
+        'Cache-Control': 'no-store'
+    }, SEC_HEADERS, extraHeaders || {}));
+    res.end(body);
+}
+
 function send(res, status, payload) {
     const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    res.writeHead(status, {
+    res.writeHead(status, Object.assign({
         'Content-Type': typeof payload === 'string' ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8',
         'Content-Length': Buffer.byteLength(body),
         'Cache-Control': 'no-store'
-    });
+    }, SEC_HEADERS));
     res.end(body);
 }
 
 function sendError(res, status, message) {
-    send(res, status, { error: message });
+    sendDenial(res, status, message);
 }
 
-function readBody(req) {
+/**
+ * 只接受 JSON 请求体。
+ *
+ * 为什么必须查：不查的话，text/plain 也能被解析成 JSON —— 而 text/plain 是
+ * 浏览器 <form> 能提交、且**不触发 CORS 预检**的类型。现在因为令牌走
+ * Authorization 头（跨站页面塞不进去）所以还没事，但这是 CSRF 需要的最后一块拼图：
+ * 哪天令牌改存 Cookie，这个洞当天就变成真漏洞。
+ */
+function assertJsonContentType(req) {
+    // 没带 body 的请求（GET / DELETE 之类的无体调用）没有内容类型可言，放行
+    const hasBody = Number(req.headers['content-length'] || 0) > 0 ||
+        req.headers['transfer-encoding'] !== undefined;
+    if (!hasBody) return;
+    const ct = String(req.headers['content-type'] || '');
+    if (!/^application\/json\s*(;|$)/i.test(ct)) {
+        throw fail(415, '请求格式不对，只接受 application/json');
+    }
+}
+
+function readBody(req, res) {
+    assertJsonContentType(req);
     return new Promise((resolve, reject) => {
         const chunks = [];
         let size = 0;
+        let over = false;      // 已超限：不再攒数据，只负责把剩下的读掉
+        let drained = 0;
+
         req.on('data', (c) => {
+            if (over) {
+                drained += c.length;
+                // 太难缠（不肯停）就掐掉，不给它无限喂数据的机会
+                if (drained > MAX_DRAIN) req.destroy();
+                return;
+            }
             size += c.length;
             if (size > MAX_BODY) {
-                reject(fail(413, '请求内容太大了'));
-                req.destroy();
+                over = true;
+                chunks.length = 0;      // 已经不要了，立刻释放
                 return;
             }
             chunks.push(c);
         });
+
+        // 读完了才回 413：这样客户端一定收得到（它已经写完了，不会再撞 RST）
         req.on('end', () => {
+            if (over) {
+                sendDenial(res, 413, '请求内容太大了', { Connection: 'close' });
+                reject(tooLarge());
+                return;
+            }
             const text = Buffer.concat(chunks).toString('utf8');
             if (!text) return resolve({});
             try {
@@ -72,7 +174,19 @@ function readBody(req) {
                 reject(fail(400, '请求内容不是合法的 JSON'));
             }
         });
-        req.on('error', reject);
+
+        // 读不干净（对端提前跑了）：这里可能还没回过 413，补一次
+        req.on('aborted', () => {
+            if (over && !res.headersSent) sendDenial(res, 413, '请求内容太大了');
+        });
+        req.on('error', (e) => {
+            if (over) {
+                if (!res.headersSent) sendDenial(res, 413, '请求内容太大了');
+                reject(tooLarge());
+                return;
+            }
+            reject(e);
+        });
     });
 }
 
@@ -123,7 +237,11 @@ function createLimiter({ windowMs, max, message }) {
     }
 
     return {
-        /** 记一次并判断是否超限；超了就抛 429 */
+        /**
+         * 记一次并判断是否超限；超了就抛 429。
+         * 语义是「这次请求消耗了一个额度」——**被拒时不要再调它**，
+         * 否则一次拒绝会被记成两次，把阈值凭空砍半。
+         */
         check(key) {
             const now = Date.now();
             if (hits.size > 5000) sweep(now);       // 兜底，别让表无限涨
@@ -135,6 +253,23 @@ function createLimiter({ windowMs, max, message }) {
             rec.count += 1;
             if (rec.count > max) throw fail(429, message);
         },
+
+        /**
+         * 只看不记：判断当前是否已经被限住。
+         *
+         * 「已经超限」和「这次是压垮骆驼的那一根」是两件事。
+         * 前者应该直接拒且不再计数，后者才该计数并拒绝。
+         * 分开之后，连错 N 次的结果是第 N+1 次开始 429，干净可预测。
+         */
+        isLimited(key) {
+            const now = Date.now();
+            const rec = hits.get(key);
+            return !!rec && now < rec.resetAt && rec.count >= max;
+        },
+
+        /** 清掉某个 key 的计数（登录成功时用） */
+        reset(key) { hits.delete(key); },
+
         clear() { hits.clear(); }
     };
 }
@@ -222,7 +357,7 @@ async function createServer(options = {}) {
         })],
 
         // ---- 账号
-        ['POST', /^\/api\/register$/, async (req) => {
+        ['POST', /^\/api\/register$/, async (req, res) => {
             const ip = clientIp(req);
             try {
                 limiter.registerBurst.check(ip);
@@ -232,7 +367,7 @@ async function createServer(options = {}) {
                 store.appendAudit({ event: 'register_blocked', ip, reason: e.message });
                 throw e;
             }
-            const body = await readBody(req);
+            const body = await readBody(req, res);
             const user = await store.createUser(body.nickname, body.password, { ip });
             store.appendAudit({
                 event: 'register',
@@ -248,8 +383,8 @@ async function createServer(options = {}) {
             return { userId: user.id, nickname: user.nickname, token };
         }],
 
-        ['POST', /^\/api\/login$/, async (req) => {
-            const body = await readBody(req);
+        ['POST', /^\/api\/login$/, async (req, res) => {
+            const body = await readBody(req, res);
             const key = throttleKey(body.nickname);
             const ip = clientIp(req);
             checkThrottle(key);
@@ -278,34 +413,51 @@ async function createServer(options = {}) {
             return pub;
         }],
 
-        ['PUT', /^\/api\/me\/courses$/, async (req) => {
+        ['PUT', /^\/api\/me\/courses$/, async (req, res) => {
             const { user } = await requireUser(req);
-            const body = await readBody(req);
+            const body = await readBody(req, res);
             const updated = await store.setUserCourses(user.id, body.courses);
             return { ok: true, courseCount: (updated.courses || []).length };
         }],
 
-        ['PUT', /^\/api\/me\/password$/, async (req) => {
+        ['PUT', /^\/api\/me\/password$/, async (req, res) => {
             const { user } = await requireUser(req);
-            const body = await readBody(req);
+            const body = await readBody(req, res);
+            const ip = clientIp(req);
+
+            // 旧密码这一关必须和登录一样有刹车。
+            // 没有它的话：抓到一次令牌就能无限次猜旧密码，猜中即永久接管账号
+            // —— 而且改密码会吊销本人的全部会话，受害者直接被锁在门外。
+            const throttle = 'pw:' + user.id;
+            if (limiter.loginFail.isLimited(throttle)) {
+                store.appendAudit({ event: 'password_change_blocked', nickname: user.nickname, ip });
+                throw fail(429, '原密码错误次数太多，歇十分钟再来');
+            }
+
             const ok = await store.verifyLogin(user.nickname, body.oldPassword);
-            if (!ok) throw fail(401, '原密码不对');
+            if (!ok) {
+                // 只在这条路径上计数：被拒的那次不算，成功的那次也不算
+                limiter.loginFail.check(throttle);
+                throw fail(401, '原密码不对');
+            }
+            limiter.loginFail.reset(throttle);
             await store.setUserPassword(user.id, body.newPassword);
+            store.appendAudit({ event: 'password_change', nickname: user.nickname, ip });
             return { ok: true };
         }],
 
         // 给群友起/改/清备注（只影响自己看到的名字）
-        ['PUT', /^\/api\/me\/remarks\/([A-Za-z0-9_-]{1,40})$/, async (req, _res, m) => {
+        ['PUT', /^\/api\/me\/remarks\/([A-Za-z0-9_-]{1,40})$/, async (req, res, m) => {
             const { user } = await requireUser(req);
-            const body = await readBody(req);
+            const body = await readBody(req, res);
             const remarks = await store.setRemark(user.id, m[1], body.remark);
             return { ok: true, remarks };
         }],
 
         // 注销账号：不可恢复，必须带密码
-        ['DELETE', /^\/api\/me$/, async (req) => {
+        ['DELETE', /^\/api\/me$/, async (req, res) => {
             const { user } = await requireUser(req);
-            const body = await readBody(req);
+            const body = await readBody(req, res);
             if (!(await store.verifyLogin(user.nickname, body.password))) {
                 throw fail(401, '密码不对，注销已取消');
             }
@@ -329,21 +481,21 @@ async function createServer(options = {}) {
         }],
 
         // ---- 群组
-        ['POST', /^\/api\/groups$/, async (req) => {
+        ['POST', /^\/api\/groups$/, async (req, res) => {
             const { user } = await requireUser(req);
-            const body = await readBody(req);
+            const body = await readBody(req, res);
             const g = await store.createGroup(user.id, body.name);
             return { code: g.code, name: g.name };
         }],
 
-        ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/join$/, async (req, _res, m) => {
+        ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/join$/, async (req, res, m) => {
             limiter.join.check(clientIp(req));   // 枚举邀请码的主要入口，卡死在这里
             const { user } = await requireUser(req);
             const r = await store.joinGroup(validateCode(m[1]), user.id);
             return { ok: true, code: r.group.code, name: r.group.name, pending: r.pending };
         }],
 
-        ['GET', /^\/api\/groups\/(\d{6}|\d{8})$/, async (req, _res, m) => {
+        ['GET', /^\/api\/groups\/(\d{6}|\d{8})$/, async (req, res, m) => {
             const { user } = await requireUser(req);
             const detail = await store.groupDetail(validateCode(m[1]), user.id);
             const isMember = detail.members.some((x) => x.id === user.id);
@@ -352,49 +504,49 @@ async function createServer(options = {}) {
         }],
 
         // 群主改群组设置（入群方式 / 成员能否邀请）
-        ['PUT', /^\/api\/groups\/(\d{6}|\d{8})\/settings$/, async (req, _res, m) => {
+        ['PUT', /^\/api\/groups\/(\d{6}|\d{8})\/settings$/, async (req, res, m) => {
             const { user } = await requireUser(req);
-            const body = await readBody(req);
+            const body = await readBody(req, res);
             await store.updateGroupSettings(validateCode(m[1]), user.id, body);
             return { ok: true };
         }],
 
         // 设自己在群里的对外备注（改的是自己的名字，所以不要求群主）
-        ['PUT', /^\/api\/groups\/(\d{6}|\d{8})\/self-remark$/, async (req, _res, m) => {
+        ['PUT', /^\/api\/groups\/(\d{6}|\d{8})\/self-remark$/, async (req, res, m) => {
             const { user } = await requireUser(req);
-            const body = await readBody(req);
+            const body = await readBody(req, res);
             const selfRemark = await store.setSelfRemark(validateCode(m[1]), user.id, body.remark);
             return { ok: true, selfRemark };
         }],
 
         // 群主审批入群申请
-        ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/requests\/([A-Za-z0-9_-]{1,40})\/approve$/, async (req, _res, m) => {
+        ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/requests\/([A-Za-z0-9_-]{1,40})\/approve$/, async (req, res, m) => {
             const { user } = await requireUser(req);
             await store.approveRequest(validateCode(m[1]), user.id, m[2]);
             return { ok: true };
         }],
 
         // 群主拒绝 / 忽略一条申请
-        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})\/requests\/([A-Za-z0-9_-]{1,40})$/, async (req, _res, m) => {
+        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})\/requests\/([A-Za-z0-9_-]{1,40})$/, async (req, res, m) => {
             const { user } = await requireUser(req);
             await store.rejectRequest(validateCode(m[1]), user.id, m[2]);
             return { ok: true };
         }],
 
-        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})\/me$/, async (req, _res, m) => {
+        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})\/me$/, async (req, res, m) => {
             const { user } = await requireUser(req);
             await store.leaveGroup(validateCode(m[1]), user.id);
             return { ok: true };
         }],
 
         // 群主移除成员（userId 形如 u_xxxxxxxx）
-        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})\/members\/([A-Za-z0-9_-]{1,40})$/, async (req, _res, m) => {
+        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})\/members\/([A-Za-z0-9_-]{1,40})$/, async (req, res, m) => {
             const { user } = await requireUser(req);
             await store.removeMember(validateCode(m[1]), user.id, m[2]);
             return { ok: true };
         }],
 
-        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})$/, async (req, _res, m) => {
+        ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})$/, async (req, res, m) => {
             const { user } = await requireUser(req);
             await store.deleteGroup(validateCode(m[1]), user.id);
             return { ok: true };
@@ -426,9 +578,9 @@ async function createServer(options = {}) {
         }],
 
         // 授 / 撤管理员
-        ['PUT', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})\/admin$/, async (req, _res, m) => {
+        ['PUT', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})\/admin$/, async (req, res, m) => {
             const { user } = await requireAdmin(req);
-            const body = await readBody(req);
+            const body = await readBody(req, res);
             const on = !!body.admin;
             const targetId = m[1];
 
@@ -449,7 +601,7 @@ async function createServer(options = {}) {
         }],
 
         // 删账号（比用户自己注销更强，但仍要求管理员身份）
-        ['DELETE', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})$/, async (req, _res, m) => {
+        ['DELETE', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})$/, async (req, res, m) => {
             const { user } = await requireAdmin(req);
             if (m[1] === user.id) throw fail(400, '不能删自己，换个管理员账号来操作');
             const r = await store.deleteUser(m[1]);
@@ -465,7 +617,7 @@ async function createServer(options = {}) {
         }],
 
         // 重置密码：没有「找回」这回事，只有换一个新的
-        ['POST', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})\/reset-password$/, async (req, _res, m) => {
+        ['POST', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})\/reset-password$/, async (req, res, m) => {
             const { user: admin } = await requireAdmin(req);
             const r = await store.resetUserPassword(m[1]);
             store.appendAudit({
@@ -479,7 +631,7 @@ async function createServer(options = {}) {
         }],
 
         // 解散任意群组，不需要是群主
-        ['DELETE', /^\/api\/admin\/groups\/(\d{6}|\d{8})$/, async (req, _res, m) => {
+        ['DELETE', /^\/api\/admin\/groups\/(\d{6}|\d{8})$/, async (req, res, m) => {
             const { user } = await requireAdmin(req);
             const g = await store.deleteGroupAsAdmin(validateCode(m[1]));
             store.appendAudit({
@@ -502,7 +654,7 @@ async function createServer(options = {}) {
         }
         if (stat.isDirectory()) return false;
 
-        res.writeHead(200, {
+        res.writeHead(200, Object.assign({
             'Content-Type': MIME[path.extname(full).toLowerCase()] || 'application/octet-stream',
             'Content-Length': stat.size,
             // /lib/ 是内置的第三方库，几乎不变，可以长缓存；
@@ -512,7 +664,7 @@ async function createServer(options = {}) {
             'Cache-Control': (pathname.startsWith('/lib/') || pathname.startsWith('/img/mascot/'))
                 ? 'public, max-age=86400'
                 : 'no-cache'
-        });
+        }, SEC_HEADERS));
         fs.createReadStream(full).pipe(res);
         return true;
     }
@@ -525,10 +677,24 @@ async function createServer(options = {}) {
         return full;
     }
 
+    /**
+     * /shared/ 下**允许**浏览器取的文件，只放行前端真正 <script> 加载的那 5 个。
+     *
+     * 以前是整个目录敞开的，连 auth.js / store.js 都能下载。那两个文件里
+     * 没有密钥（我核过），所以不算泄漏；但 auth.js 的文件头自己写着
+     * 「仅服务端使用，浏览器端不加载」—— 声明和事实对不上。
+     * 更要紧的是：哪天有人往 shared/ 里放一个密钥常量，敞开就等于当场泄漏。
+     * 白名单让那句声明变成代码事实。
+     */
+    const SHARED_PUBLIC = new Set(['config.js', 'periods.js', 'ics.js', 'weeks.js', 'compare.js']);
+
     async function serveStatic(req, res, pathname) {
         // /shared/* 直接映射到仓库里的 shared/，避免把共享模块复制一份到 public/
         if (pathname === '/shared' || pathname.startsWith('/shared/')) {
-            const full = resolveUnder(SHARED, pathname.slice('/shared'.length));
+            const rel = pathname.slice('/shared'.length);
+            const name = rel.replace(/^[/\\]+/, '');
+            if (!SHARED_PUBLIC.has(name)) return sendError(res, 404, '共享模块不存在');
+            const full = resolveUnder(SHARED, rel);
             if (!full) return sendError(res, 403, '路径不合法');
             if (await sendFile(res, full, pathname)) return;
             return sendError(res, 404, '共享模块不存在');
@@ -541,14 +707,50 @@ async function createServer(options = {}) {
         if (!full) return sendError(res, 403, '路径不合法');
         if (await sendFile(res, full, pathname)) return;
 
-        // 前端是单页应用，未知路径回落到 index.html
+        // 前端是单页应用，**未知的页面路径**才回落到 index.html。
+        //
+        // 不能无条件回落：以前 /../server.js 这种明显是穿越尝试的请求也回 200，
+        // 于是「被挡住了」和「真的读到了源码」在响应上长得一模一样 ——
+        // 安全结论只能靠人去比对响应体长度（我做审计时就是这么踩进去的）。
+        // 而且哪天有人改坏了路径处理，真漏洞会静默生效、毫无信号。
+        //
+        // 所以三种情况直接 404，不给首页：
+        //   1. 末段带扩展名 —— 那是在要一个文件，不是要页面
+        //   2. normalize 之后和原样不一样 —— 形状就是穿越（含 . / .. / 双斜杠）
+        //   3. 带 NUL —— 截断攻击的老手法
+        if (looksLikeFile(rel) || looksSuspicious(rel)) {
+            return sendError(res, 404, '页面不存在');
+        }
         return sendIndex(res);
+    }
+
+    /** 末段带扩展名 = 想要一个文件，不该拿到首页 */
+    function looksLikeFile(rel) {
+        const last = rel.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || '';
+        return /\.[a-z0-9]{1,10}$/i.test(last);
+    }
+
+    /**
+     * 形状像穿越 / 截断的路径。
+     *
+     * 用「normalize 前后是否一致」来判断，比自己拆段数空串可靠 ——
+     * 后者会把正常路径开头的那个 '/' 也算成空段，于是 /some/deep/page 被误伤。
+     */
+    function looksSuspicious(rel) {
+        if (rel.includes('\0')) return true;
+        const stripped = rel.replace(/^[/\\]+/, '');
+        if (!stripped) return false;
+        return path.normalize(stripped).replace(/\\/g, '/') !== stripped.replace(/\\/g, '/');
     }
 
     async function sendIndex(res) {
         try {
             const html = await fsp.readFile(path.join(PUBLIC, 'index.html'));
-            res.writeHead(200, { 'Content-Type': MIME['.html'], 'Content-Length': html.length, 'Cache-Control': 'no-cache' });
+            res.writeHead(200, Object.assign({
+                'Content-Type': MIME['.html'],
+                'Content-Length': html.length,
+                'Cache-Control': 'no-cache'
+            }, SEC_HEADERS));
             res.end(html);
         } catch (_) {
             sendError(res, 500, '前端文件缺失：public/index.html');
@@ -583,9 +785,14 @@ async function createServer(options = {}) {
                 const result = await handler(req, res, m);
                 return send(res, 200, result);
             } catch (e) {
+                // readBody 超限时已经自己回过 413 了，这里不能再回一次
+                if (e && e.bodySent) return;
                 const status = e && e.status ? e.status : 500;
                 if (status >= 500) console.error(`[api] ${method} ${pathname}`, e);
-                return sendError(res, status, (e && e.message) || '服务器内部错误');
+                // 只有我们自己造的（带 status）才把文案透出去；
+                // 其余是 fs / 运行时抛的原文，里头可能有 errno 甚至绝对路径。
+                const msg = (e && e.status) ? e.message : '服务器内部错误';
+                return sendError(res, status, msg);
             }
         }
         return sendError(res, 404, '接口不存在');
@@ -596,6 +803,18 @@ async function createServer(options = {}) {
         store.cleanup().catch((e) => console.error('[cleanup]', e.message));
     }, 24 * 3600 * 1000);
     timer.unref();
+
+    // 会话表攒下的 lastSeen 定期落盘（10 秒一次，脏了才写）
+    const flushTimer = setInterval(() => {
+        store.flushSessions('定时').catch(() => {});
+    }, 10 * 1000);
+    flushTimer.unref();
+
+    // 关服前把还没落盘的会话写下去，免得下次启动读到偏旧的 lastSeen
+    server.on('close', () => {
+        clearInterval(flushTimer);
+        store.flushSessions('关服').catch(() => {});
+    });
 
     server.store = store;
     server.port = port;
@@ -653,6 +872,31 @@ async function runAdminCli(opts) {
     console.log(`  当前管理员共 ${await store.countAdmins()} 个。\n`);
 }
 
+/**
+ * 进程级兜底。
+ *
+ * 没有它的话，任何一个没被 catch 住的错误都会让 Node 进程**整个退出** ——
+ * 所有同学立刻连不上，而且必须有人走到这台电脑前手动重启。
+ * 「半夜爬起来重启」和「记一笔日志继续跑」是很不一样的体验。
+ *
+ * 注意：兜底**必须记日志**。把异常吞掉又不留痕，等于把 bug 藏起来。
+ */
+function installCrashGuards(store) {
+    let handled = false;
+    const crash = (kind, err) => {
+        if (handled) return;          // 同类事件连环触发时只处理第一次
+        handled = true;
+        console.error(`[fatal] ${kind}：`, err);
+        const write = store
+            ? store.appendAudit({ event: 'crash', kind, message: String((err && err.message) || err) })
+            : Promise.resolve();
+        write.catch(() => {}).then(() => process.exit(1));
+        setTimeout(() => process.exit(1), 1500).unref();
+    };
+    process.on('uncaughtException', (err) => crash('uncaughtException', err));
+    process.on('unhandledRejection', (err) => crash('unhandledRejection', err));
+}
+
 async function main() {
     const opts = parseArgs(process.argv.slice(2));
 
@@ -662,6 +906,7 @@ async function main() {
     }
 
     const server = await createServer(opts);
+    installCrashGuards(server.store);
     const ifaces = lanInterfaces();
     const suspects = await server.store.listSuspects().catch(() => []);
     server.listen(server.port, '0.0.0.0', () => {

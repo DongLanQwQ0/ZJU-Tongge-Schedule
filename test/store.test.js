@@ -317,13 +317,18 @@ test('清理：过期会话被移除', async () => {
     const user = await store.createUser('小灰', 'password1');
     const token = await store.createSession(user.id);
 
-    // 手动把 lastSeen 改成 100 天前
+    // 会话表现在常驻内存（读路径不再每请求读盘），所以不能靠改文件来伪造过期 ——
+    // 得改内存里的那份，再落盘，这样才是「重启后仍过期」的真实状态。
     const f = path.join(dir, 'sessions.json');
     const db = JSON.parse(fs.readFileSync(f, 'utf8'));
     db.sessions[token].lastSeen = Date.now() - 100 * 86400000;
     fs.writeFileSync(f, JSON.stringify(db), 'utf8');
 
-    const removed = await store.cleanup();
+    // 重建一个 store，从盘上加载这份「100 天前活动过」的表
+    const fresh = createStore(dir);
+    await fresh.init();
+    const removed = await fresh.cleanup();
     assert.equal(removed.sessions, 1);
-    assert.equal(await store.resolveSession(token), null);
+    assert.equal(await fresh.resolveSession(token), null);
+    assert.equal(store.dataDir, dir);   // 保留原 store 引用，避免未使用告警
 });

@@ -347,7 +347,8 @@ test('IP 限流：拿脚本刷加入接口会被挡住', async () => {
     const ra = `http://127.0.0.1:${s.address().port}`;
     try {
         const reg = await fetch(ra + '/api/register', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ nickname: '刷码的人', password: 'password1' })
         });
         const token = (await reg.json()).token;
@@ -425,4 +426,191 @@ test('静态文件：首页可访问，目录穿越被挡', async () => {
     assert.match(home.headers.get('content-type'), /text\/html/);
     const html = await home.text();
     assert.match(html, /同格/);
+
+    // 未知页面路径仍然回落首页（单页应用的前端路由靠这个）
+    const spa = await fetch(base + '/some/deep/page');
+    assert.equal(spa.status, 200);
+
+    // 但「像文件的路径」不能再回落 —— 否则穿越尝试和被挡住长得一模一样。
+    // 这里的核心断言不只是状态码，而是**响应体不等于 index.html**：
+    // 以前这一组全部回 200 + 首页，评审时根本分不清是挡住了还是读到了。
+    for (const p of [
+        '/../server.js', '/..%2fserver.js', '/%2e%2e%2fserver.js',
+        '/....//server.js', '/..\\server.js', '/%2e%2e%5cserver.js',
+        '/shared/../server.js', '/shared/../data/users.json',
+        '/../data/users.json', '/%2e%2e/data/users.json', '/%00'
+    ]) {
+        const r = await fetch(base + p);
+        const body = await r.text();
+        assert.equal(r.status, 404, `${p} 应当 404`);
+        assert.notEqual(body, html, `${p} 不能回首页`);
+        assert.doesNotMatch(body, /require\(|module\.exports|pwHash|createStore/, `${p} 泄露了源码`);
+    }
+});
+
+test('/shared/ 只放行前端真正加载的模块', async () => {
+    // 白名单内的仍在
+    for (const f of ['config.js', 'periods.js', 'ics.js', 'weeks.js', 'compare.js']) {
+        assert.equal((await fetch(base + '/shared/' + f)).status, 200, f);
+    }
+    // 白名单外的一律不给：这两个文件自己的注释都写着「仅服务端使用」
+    for (const f of ['auth.js', 'store.js', 'ics.js.bak', 'sessions.json']) {
+        const r = await fetch(base + '/shared/' + f);
+        assert.equal(r.status, 404, f);
+        assert.doesNotMatch(await r.text(), /scrypt|createStore|module\.exports/, f);
+    }
+});
+
+test('请求体不是 JSON 类型 -> 415', async () => {
+    const r = await fetch(base + '/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ nickname: '类型探测', password: 'password1' })
+    });
+    assert.equal(r.status, 415);
+
+    // 没有 body 的 DELETE 不该被这条规则误伤
+    const reg = await api('/api/register', { method: 'POST', body: { nickname: '无体测试', password: 'password1' } });
+    assert.equal((await api('/api/logout', { method: 'POST', token: reg.body.token })).status, 200);
+});
+
+test('请求体超限 -> 413（而不是把连接掐断）', async () => {
+    const reg = await api('/api/register', { method: 'POST', body: { nickname: '超限测试', password: 'password1' } });
+    const r = await fetch(base + '/api/me/courses', {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${reg.body.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ courses: [], pad: 'x'.repeat(2 * 1024 * 1024) })
+    });
+    assert.equal(r.status, 413, '应当拿到明确的 413 而不是连接被重置');
+    assert.match((await r.json()).error, /太大/);
+});
+
+test('每个响应都带安全头', async () => {
+    for (const p of ['/', '/style.css', '/api/meta', '/api/me', '/no/such/file.txt']) {
+        const r = await fetch(base + p);
+        assert.equal(r.headers.get('x-content-type-options'), 'nosniff', p);
+        assert.equal(r.headers.get('x-frame-options'), 'DENY', p);
+        assert.equal(r.headers.get('referrer-policy'), 'no-referrer', p);
+        assert.match(r.headers.get('content-security-policy') || '', /frame-ancestors 'none'/, p);
+    }
+});
+
+test('内部错误不回传 errno 或绝对路径', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-leak-'));
+    const s = await createServer({ dataDir: dir, port: 0, skipCleanup: true });
+    await new Promise((r) => s.listen(0, '127.0.0.1', r));
+    const ra = `http://127.0.0.1:${s.address().port}`;
+    try {
+        // 把 users.json 换成目录 -> 读取时抛 EISDIR，走 500 分支
+        fs.rmSync(path.join(dir, 'users.json'), { force: true });
+        fs.mkdirSync(path.join(dir, 'users.json'));
+        const r = await fetch(ra + '/api/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nickname: '内部错误', password: 'password1' })
+        });
+        assert.equal(r.status, 500);
+        const text = await r.text();
+        assert.doesNotMatch(text, /EISDIR|ENOENT|errno|syscall/, '不能回传系统错误原文');
+        assert.doesNotMatch(text, /[A-Za-z]:\\/, '不能回传绝对路径');
+        assert.match(text, /服务器内部错误/);
+    } finally {
+        await new Promise((res) => s.close(res));
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('改密码：旧密码连错会被限速，成功后旧会话全失效', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-pw-'));
+    const s = await createServer({
+        dataDir: dir, port: 0, skipCleanup: true,
+        limits: { loginFail: { windowMs: 600000, max: 3, message: '原密码错误次数太多' } }
+    });
+    await new Promise((r) => s.listen(0, '127.0.0.1', r));
+    const ra = `http://127.0.0.1:${s.address().port}`;
+    const call = (pathname, opts = {}) => {
+        const headers = {};
+        if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+        if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+        return fetch(ra + pathname, {
+            method: opts.method || 'GET', headers,
+            body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
+        });
+    };
+    try {
+        const reg = await (await call('/api/register', { method: 'POST', body: { nickname: '改密测试', password: 'password1' } })).json();
+        const token = reg.token;
+
+        // 前 3 次错误旧密码：401；第 4 次起应当被限速
+        for (let i = 0; i < 3; i++) {
+            const r = await call('/api/me/password', {
+                method: 'PUT', token, body: { oldPassword: '错的' + i, newPassword: 'password2' }
+            });
+            assert.equal(r.status, 401, `第 ${i + 1} 次应当 401`);
+        }
+        const blocked = await call('/api/me/password', {
+            method: 'PUT', token, body: { oldPassword: '错的', newPassword: 'password2' }
+        });
+        assert.equal(blocked.status, 429, '旧密码连错必须被限速');
+
+        // 换个人不受影响（限速是按账号，不是全局）
+        const reg2 = await (await call('/api/register', { method: 'POST', body: { nickname: '无辜的人', password: 'password1' } })).json();
+        const ok = await call('/api/me/password', {
+            method: 'PUT', token: reg2.token, body: { oldPassword: 'password1', newPassword: 'password2' }
+        });
+        assert.equal(ok.status, 200, '别人不该被连坐');
+
+        // 改密码吊销全部旧会话
+        assert.equal((await call('/api/me', { token: reg2.token })).status, 401);
+    } finally {
+        await new Promise((res) => s.close(res));
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('会话表：读路径不重写整张表，令牌照常认得出', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-sess-'));
+    const store = require('../shared/store.js').createStore(dir);
+    await store.init();
+    const u = await store.createUser('会话落盘', 'password1', { ip: '127.0.0.1' });
+    const token = await store.createSession(u.id);
+
+    const sess = path.join(dir, 'sessions.json');
+    await new Promise((r) => setTimeout(r, 20));
+    const before = fs.statSync(sess).mtimeMs;
+
+    // 核心回归：每个请求都重写整张会话表是以前的写放大来源（实测慢 19 倍）。
+    // 现在紧跟的鉴权请求只读内存，不该产生任何写盘。
+    assert.ok(await store.resolveSession(token), '会话应当可解析');
+    assert.equal(fs.statSync(sess).mtimeMs, before, '紧跟的请求不该重写整个会话表');
+
+    // 令牌必须真的在盘上（重建 store 模拟重启后仍认得出）
+    const fresh = require('../shared/store.js').createStore(dir);
+    await fresh.init();
+    assert.ok(await fresh.resolveSession(token), '重启后会话仍然有效');
+
+    // 没有脏数据时 flush 是空操作，不该白写一次
+    assert.equal(await fresh.flushSessions('测试'), false, '没有改动就不该写盘');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('关键文件损坏：优先从 .bak 恢复，而不是把所有人清空', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-bak-'));
+    const storeMod = require('../shared/store.js');
+    const store = storeMod.createStore(dir);
+    await store.init();
+    await store.createUser('备份测试', 'password1', { ip: '127.0.0.1' });
+
+    // 上一步写完就该有 .bak
+    const users = path.join(dir, 'users.json');
+    assert.ok(fs.existsSync(users + '.bak'), '应当留了 .bak');
+
+    // 把正式文件写坏，然后重新加载
+    fs.writeFileSync(users, '{ 这不是合法 JSON', 'utf8');
+    const store2 = storeMod.createStore(dir);
+    await store2.init();
+    const back = await store2.findUserByNickname('备份测试');
+    assert.ok(back, '应当从 .bak 把账号找回，而不是从空表开始');
+    assert.ok(fs.readdirSync(dir).some((f) => f.includes('.corrupt-')), '损坏的那份要留证');
 });

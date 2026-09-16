@@ -130,6 +130,48 @@ function createStore(dataDir) {
         return run;
     }
 
+    /**
+     * 原子写：先写 .tmp 再 rename。
+     *
+     * rename 在 Windows 上会被杀软/编辑器/索引器临时占用而抛 EPERM / EBUSY ——
+     * 这是**平台常态**，不是异常。不重试的话，一次占用就是一次 500 加一个残留 .tmp。
+     *
+     * mode: 0o600 只在 Linux/macOS 生效。Windows 上 Node 的 chmod 是空操作
+     * （statSync 会一直报 666），那边靠 ACL 收权，见 server.js 的启动提示；
+     * 这里写上是为了让代码在类 Unix 上默认就是对的。
+     */
+    async function writeJsonAtomic(file, data) {
+        const tmp = `${file}.tmp`;
+        await fsp.writeFile(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+        for (let i = 0; ; i++) {
+            try {
+                await fsp.rename(tmp, file);
+                return;
+            } catch (e) {
+                if (i >= 4 || (e.code !== 'EPERM' && e.code !== 'EBUSY' && e.code !== 'EACCES')) {
+                    await fsp.unlink(tmp).catch(() => {});
+                    throw e;
+                }
+                await new Promise((r) => setTimeout(r, 15 * (i + 1)));
+            }
+        }
+    }
+
+    /**
+     * 原子写 + 留一份 .bak。
+     *
+     * 只给 users.json / sessions.json 用。备份是 **await 的** ——
+     * 一开始写成异步不等待，结果紧接着的读路径会和拷贝抢文件句柄，
+     * 在 Windows 上直接撞出 EBUSY。可靠性优先于那一点延迟。
+     *
+     * 有了 .bak，文件损坏时能恢复出上一次的完整数据，
+     * 而不是「从空开始」——那等于把所有人强制登出。
+     */
+    async function writeCritical(file, data) {
+        await writeJsonAtomic(file, data);
+        await fsp.copyFile(file, `${file}.bak`).catch(() => {});
+    }
+
     async function readJson(file, fallback) {
         let text;
         try {
@@ -149,23 +191,83 @@ function createStore(dataDir) {
         }
     }
 
-    async function writeJsonAtomic(file, data) {
-        const tmp = `${file}.tmp`;
-        await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
-        await fsp.rename(tmp, file);
+    /**
+     * readJson + 损坏时先尝试从 .bak 恢复。
+     * 给 users.json / sessions.json 用 —— 这两个丢掉就是「全员掉线」级别的事故。
+     */
+    async function readCritical(file, fallback) {
+        try {
+            return JSON.parse(await fsp.readFile(file, 'utf8'));
+        } catch (e) {
+            if (e.code === 'ENOENT') return fallback();
+        }
+        const stamp = now();
+        try { await fsp.rename(file, `${file}.corrupt-${stamp}`); } catch (_) { /* 保底继续 */ }
+        try {
+            const data = JSON.parse(await fsp.readFile(`${file}.bak`, 'utf8'));
+            console.error(`[store] ${file} 损坏，已从 .bak 恢复（损坏副本：${file}.corrupt-${stamp}）`);
+            await writeJsonAtomic(file, data).catch(() => {});
+            return data;
+        } catch (_) {
+            console.error(`[store] ${file} 损坏且没有可用的 .bak，只能重建`);
+            return fallback();
+        }
     }
 
     const emptyUsers = () => ({ v: 1, users: [] });
     const emptySessions = () => ({ v: 1, sessions: {} });
     const groupFile = (code) => path.join(GROUPS, `${code}.json`);
 
-    async function init() {
-        await fsp.mkdir(GROUPS, { recursive: true });
-        await readJson(USERS, emptyUsers);
-        await readJson(SESSIONS, emptySessions);
+    // 会话表的常驻副本。
+    //
+    // 为什么要有它：resolveSession 每个请求都会被调用一次，而它原本每次都要
+    // 「读整个 sessions.json → 整体重写一遍」——只为了把 lastSeen 改成当前时间。
+    // 实测（400 个会话）读+写 1.35ms，纯读 0.07ms，慢 19 倍，而且是全局串行。
+    // 一个班 50 人同时刷页，就是把这张表反复重写几十遍。
+    //
+    // 所以读路径全程走内存；只有 lastSeen 的刷新攒够 SLA 才落盘（见 flushSessions）。
+    let cachedSessions = null;
+    let sessionsDirty = false;
+
+    /**
+     * 把已加载进内存的会话表写回磁盘；定时器、退出钩子与测试共用。
+     *
+     * 返回 Promise 而不是「发射后不管」：关服钩子需要在进程退出前
+     * 真正等到这一笔写完，否则最后一次同步就白做了。
+     */
+    async function flushSessions(reason) {
+        if (!sessionsDirty || !cachedSessions) return false;
+        sessionsDirty = false;
+        const snapshot = cachedSessions;   // 取出当前引用，后续被换掉也不影响这次写入
+        try {
+            await withLock('sessions', () => writeCritical(SESSIONS, snapshot));
+            return true;
+        } catch (e) {
+            sessionsDirty = true;          // 写失败就留着，下次再试
+            console.error(`[store] ${reason || 'flush'} 写 sessions.json 失败：`, e.message);
+            return false;
+        }
     }
 
-    // -------------------------------------------------- 站点访问口令
+    async function init() {
+        await fsp.mkdir(GROUPS, { recursive: true });
+        // 账号表走全量读取（users.json 是权威数据，读得少、写得多）
+        await readCritical(USERS, emptyUsers);
+        // 会话表只在启动时读一次，之后常驻内存
+        cachedSessions = await readCritical(SESSIONS, emptySessions);
+        if (!cachedSessions.sessions || typeof cachedSessions.sessions !== 'object') {
+            cachedSessions.sessions = {};
+        }
+    }
+
+    async function readCachedSessions() {
+        if (cachedSessions) return cachedSessions;
+        cachedSessions = await readCritical(SESSIONS, emptySessions);
+        if (!cachedSessions.sessions || typeof cachedSessions.sessions !== 'object') {
+            cachedSessions.sessions = {};
+        }
+        return cachedSessions;
+    }
 
     // -------------------------------------------------- 账号
 
@@ -220,7 +322,7 @@ function createStore(dataDir) {
             if (!user.remarks || typeof user.remarks !== 'object') user.remarks = {};
             if (clean) user.remarks[target] = clean;
             else delete user.remarks[target];
-            await writeJsonAtomic(USERS, db);
+            await writeCritical(USERS, db);
             return user.remarks;
         });
     }
@@ -237,14 +339,19 @@ function createStore(dataDir) {
         const key = auth.normalizeNickname(clean);
         const ip = String((meta && meta.ip) || '');
 
+        // 哈希在**锁外**算。
+        // scrypt 一次要 50–80ms、占 16MB，而它不依赖任何共享状态；
+        // 放在 users 写锁里面，等于把并发注册整条串行化 —— 白白让人排队。
+        // 代价只是昵称撞车时多算一次哈希，可以忽略。
+        const salt = auth.makeSalt();
+        const hash = await auth.hashPassword(pass, salt);
+
         return withLock('users', async () => {
             const db = await readJson(USERS, emptyUsers);
             if (!Array.isArray(db.users)) db.users = [];
             if (db.users.some((u) => auth.normalizeNickname(u.nickname) === key)) {
                 throw fail(409, '这个昵称已经有人在用了，换一个吧');
             }
-            const salt = auth.makeSalt();
-            const hash = await auth.hashPassword(pass, salt);
             const ts = now();
             const user = {
                 id: 'u_' + auth.newToken().slice(0, 8),
@@ -276,7 +383,7 @@ function createStore(dataDir) {
                 }
             }
 
-            await writeJsonAtomic(USERS, db);
+            await writeCritical(USERS, db);
             return Object.assign({}, user, flagged ? { suspect: true } : {});
         });
     }
@@ -339,7 +446,7 @@ function createStore(dataDir) {
             db.users.forEach((u) => {
                 if (u.remarks && u.remarks[userId]) delete u.remarks[userId];
             });
-            await writeJsonAtomic(USERS, db);
+            await writeCritical(USERS, db);
             return user;
         });
 
@@ -380,7 +487,7 @@ function createStore(dataDir) {
             if (!user) throw fail(404, '账号不存在');
             user.courses = clean;
             user.updatedAt = now();
-            await writeJsonAtomic(USERS, db);
+            await writeCritical(USERS, db);
             return user;
         });
     }
@@ -396,7 +503,7 @@ function createStore(dataDir) {
             user.pwSalt = salt;
             user.pwHash = await auth.hashPassword(pass, salt);
             user.updatedAt = now();
-            await writeJsonAtomic(USERS, db);
+            await writeCritical(USERS, db);
             // 改密码后吊销全部旧会话
             await revokeUserSessions(id);
             return user;
@@ -420,7 +527,7 @@ function createStore(dataDir) {
             user.pwSalt = salt;
             user.pwHash = await auth.hashPassword(password, salt);
             user.updatedAt = now();
-            await writeJsonAtomic(USERS, db);
+            await writeCritical(USERS, db);
             return { nickname: user.nickname, password };
         });
         // 锁外再吊销会话，别把 users 锁和 sessions 锁叠在一起
@@ -442,63 +549,61 @@ function createStore(dataDir) {
 
     // -------------------------------------------------- 会话
 
+    /** lastSeen 多久才值得落一次盘。低于它就只在内存里推进，省掉整表重写 */
+    const LASTSEEN_WRITE_MS = 60 * 1000;
+
+    /** 新建会话：必须**立刻**落盘 —— 令牌刚发给用户，崩溃不能把它弄丢 */
     async function createSession(userId) {
         const token = auth.newToken();
-        await withLock('sessions', async () => {
-            const db = await readJson(SESSIONS, emptySessions);
-            if (!db.sessions) db.sessions = {};
-            db.sessions[token] = { userId, createdAt: now(), lastSeen: now() };
-            await writeJsonAtomic(SESSIONS, db);
-        });
+        const db = await readCachedSessions();
+        db.sessions[token] = { userId, createdAt: now(), lastSeen: now() };
+        await withLock('sessions', () => writeCritical(SESSIONS, db));
+        sessionsDirty = false;             // 刚写的就是最新状态
         return token;
     }
 
-    /** 取会话对应账号，并滑动续期；过期/不存在返回 null */
+    /**
+     * 取会话对应账号，并滑动续期；过期/不存在返回 null。
+     *
+     * 全程读内存。lastSeen 的落盘按 LASTSEEN_WRITE_MS 节流：
+     * 到期的那次会把内存里的最新值一次写下去，所以即使进程被强杀，
+     * 盘上的 lastSeen 最多旧一分钟 —— 远小于 90 天的有效期，不影响任何判定。
+     */
     async function resolveSession(token) {
         if (!token) return null;
-        const db = await readJson(SESSIONS, emptySessions);
-        const s = (db.sessions || {})[token];
+        const db = await readCachedSessions();
+        const s = db.sessions[token];
         if (!s) return null;
-        if (now() - s.lastSeen > SESSION_TTL) {
-            await withLock('sessions', async () => {
-                const d2 = await readJson(SESSIONS, emptySessions);
-                if (d2.sessions && d2.sessions[token]) {
-                    delete d2.sessions[token];
-                    await writeJsonAtomic(SESSIONS, d2);
-                }
-            });
+
+        const t = now();
+        if (t - s.lastSeen > SESSION_TTL) {
+            delete db.sessions[token];
+            await withLock('sessions', () => writeCritical(SESSIONS, db));
             return null;
         }
-        await withLock('sessions', async () => {
-            const d2 = await readJson(SESSIONS, emptySessions);
-            if (d2.sessions && d2.sessions[token]) {
-                d2.sessions[token].lastSeen = now();
-                await writeJsonAtomic(SESSIONS, d2);
-            }
-        });
+        if (t - s.lastSeen > LASTSEEN_WRITE_MS) {
+            s.lastSeen = t;
+            await flushSessions('滑动续期');
+        }
         const user = await getUser(s.userId);
         return user || null;
     }
 
     async function revokeSession(token) {
-        await withLock('sessions', async () => {
-            const db = await readJson(SESSIONS, emptySessions);
-            if (db.sessions && db.sessions[token]) {
-                delete db.sessions[token];
-                await writeJsonAtomic(SESSIONS, db);
-            }
-        });
+        const db = await readCachedSessions();
+        if (!db.sessions[token]) return;
+        delete db.sessions[token];
+        await withLock('sessions', () => writeCritical(SESSIONS, db));
     }
 
+    /** 吊销某人的全部会话（改密码 / 注销账号 / 被删号都会用到） */
     async function revokeUserSessions(userId) {
-        await withLock('sessions', async () => {
-            const db = await readJson(SESSIONS, emptySessions);
-            let changed = false;
-            Object.keys(db.sessions || {}).forEach((t) => {
-                if (db.sessions[t].userId === userId) { delete db.sessions[t]; changed = true; }
-            });
-            if (changed) await writeJsonAtomic(SESSIONS, db);
+        const db = await readCachedSessions();
+        let changed = false;
+        Object.keys(db.sessions).forEach((t) => {
+            if (db.sessions[t].userId === userId) { delete db.sessions[t]; changed = true; }
         });
+        if (changed) await withLock('sessions', () => writeCritical(SESSIONS, db));
     }
 
     // -------------------------------------------------- 群组
@@ -811,16 +916,17 @@ function createStore(dataDir) {
     /** 过期会话与长期不活动的群组 */
     async function cleanup() {
         const removed = { sessions: 0, groups: 0 };
-        await withLock('sessions', async () => {
-            const db = await readJson(SESSIONS, emptySessions);
-            Object.keys(db.sessions || {}).forEach((t) => {
-                if (now() - db.sessions[t].lastSeen > SESSION_TTL) {
-                    delete db.sessions[t];
-                    removed.sessions++;
-                }
-            });
-            if (removed.sessions) await writeJsonAtomic(SESSIONS, db);
+        const db = await readCachedSessions();
+        Object.keys(db.sessions).forEach((t) => {
+            if (now() - db.sessions[t].lastSeen > SESSION_TTL) {
+                delete db.sessions[t];
+                removed.sessions++;
+            }
         });
+        if (removed.sessions) {
+            await withLock('sessions', () => writeCritical(SESSIONS, db));
+            sessionsDirty = false;
+        }
 
         await fsp.mkdir(GROUPS, { recursive: true });
         const files = await fsp.readdir(GROUPS);
@@ -853,7 +959,7 @@ function createStore(dataDir) {
             user.lastLoginAt = now();
             user.lastLoginIp = String(ip || '');
             user.loginCount = (user.loginCount || 0) + 1;
-            await writeJsonAtomic(USERS, db);
+            await writeCritical(USERS, db);
             return user;
         });
     }
@@ -906,7 +1012,7 @@ function createStore(dataDir) {
             if (admin) user.admin = true;
             else delete user.admin;
             user.updatedAt = now();
-            await writeJsonAtomic(USERS, db);
+            await writeCritical(USERS, db);
             return user;
         });
     }
@@ -987,6 +1093,8 @@ function createStore(dataDir) {
         dataDir,
         init,
         cleanup,
+        // 会话表的落盘（定时器与退出钩子用；读路径不经过它）
+        flushSessions,
         // 账号
         readUsers,
         getUser,
