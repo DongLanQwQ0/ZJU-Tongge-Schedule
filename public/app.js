@@ -435,17 +435,31 @@
         var tags = '';
         if (u.admin) tags += '<span class="chip-lv same">管理员</span>';
         if (u.suspect) tags += '<span class="chip-lv cross">待复核</span>';
-        if (!u.courseCount) tags += '<span class="chip-lv unknown">未传课表</span>';
+        if (u.dormant) tags += '<span class="chip-lv unknown">待清理</span>';
+        else if (!u.courseCount) tags += '<span class="chip-lv nearby">未传课表</span>';
+
+        // loginCount 为 0 只代表「这个统计上线之后没登录过」，不代表没登录过 ——
+        // 老账号本来就没有记录，别把「没记录」说成「没来过」
+        var seen = u.lastLoginAt
+            ? '最后登录 ' + fmtTime(u.lastLoginAt) + (u.lastLoginIp ? ' · ' + esc(u.lastLoginIp) : '')
+            : '无登录记录（统计上线前注册的）';
+        var logins = u.loginCount ? '登录 ' + u.loginCount + ' 次' : '无登录记录';
+        var idle = u.idleDays >= 1 ? u.idleDays + ' 天没露面' : '最近还活跃';
+
         return '<div class="item admin-row">' +
             '<div class="grow"><div class="title">' + esc(u.nickname) + '</div>' +
-            '<div class="sub">' + u.courseCount + ' 个时段 · 注册 ' + fmtTime(u.createdAt) +
-            (u.regIp ? ' · ' + esc(u.regIp) : '') + '</div>' +
+            '<div class="sub">' + u.courseCount + ' 个时段 · ' + logins + ' · ' + idle + '</div>' +
+            '<div class="sub">' + seen + '</div>' +
+            '<div class="sub">注册 ' + fmtTime(u.regAt) +
+            (u.regIp && u.regIp !== u.lastLoginIp ? ' · ' + esc(u.regIp) : '') + '</div>' +
             (tags ? '<div class="overlap">' + tags + '</div>' : '') +
             '</div>' +
+            '<div class="row-acts">' +
+            '<button class="row-note" data-reset="' + esc(u.id) + '">重置密码</button>' +
             '<button class="row-note" data-grant="' + esc(u.id) + '">' +
             (u.admin ? '撤管' : '授权') + '</button>' +
             '<button class="row-remove" data-deluser="' + esc(u.id) + '">删除</button>' +
-            '</div>';
+            '</div></div>';
     }
 
     function adminGroupRow(g) {
@@ -470,7 +484,8 @@
             ['管理员', a.stats.adminCount],
             ['已传课表', a.stats.courseUploaded],
             ['群组', a.stats.groupCount],
-            ['待复核', a.stats.suspectCount]
+            ['待复核', a.stats.suspectCount],
+            ['待清理', a.stats.dormantCount]
         ].map(function (p) {
             return '<div class="stat"><b>' + p[1] + '</b><span>' + p[0] + '</span></div>';
         }).join('');
@@ -494,6 +509,23 @@
                 ' · ' + fmtTime(s.createdAt) + '</div></div></div>';
         }).join('');
 
+        // 待清理：只列出来给人看，不自动删 —— 到底是不是废号，人和人之间的
+        // 情况只有群主知道（有人就是注册了先放着，开学才传课表）
+        var dorm = a.users.filter(function (u) { return u.dormant; });
+        $('#admin-dormant-card').hidden = !dorm.length;
+        $('#admin-dormant-count').textContent = dorm.length + ' 个';
+        $('#admin-dormant').innerHTML = dorm.map(function (u) {
+            return '<div class="item admin-row"><div class="grow">' +
+                '<div class="title">' + esc(u.nickname) + '</div>' +
+                '<div class="sub">' + u.idleDays + ' 天没露面 · 注册 ' + fmtTime(u.regAt) +
+                (u.regIp ? ' · ' + esc(u.regIp) : '') + '</div>' +
+                '<div class="sub">' + (u.loginCount ? '登录 ' + u.loginCount + ' 次' : '无登录记录') +
+                ' · 一次课表都没传过</div>' +
+                '</div><div class="row-acts">' +
+                '<button class="row-remove" data-deluser="' + esc(u.id) + '">删除</button>' +
+                '</div></div>';
+        }).join('');
+
         $('#admin-audit').innerHTML = a.audit.length
             ? a.audit.map(function (e) {
                 return '<div class="item admin-row"><div class="grow">' +
@@ -502,8 +534,6 @@
                     '</div></div></div>';
             }).join('')
             : '<div class="empty">还没有日志</div>';
-
-        bindAdminActions();
     }
 
     function renderAdminUsers(q) {
@@ -518,18 +548,27 @@
         $('#admin-users').innerHTML = users.length
             ? users.map(adminUserRow).join('')
             : '<div class="empty">没有匹配的账号</div>';
-        bindAdminActions();
     }
 
-    function bindAdminActions() {
-        $$('#admin-users [data-grant]').forEach(function (btn) {
-            btn.addEventListener('click', function () { toggleAdmin(btn.getAttribute('data-grant')); });
+    /**
+     * 事件委托：监听器只挂在**不会被替换**的容器上，一次就够。
+     *
+     * 之前是每次 innerHTML 之后遍历新元素逐个 addEventListener —— 结果
+     * renderAdmin() 里先调 renderAdminUsers() 绑一遍、末尾又绑一遍，
+     * 同一颗按钮挂了两份监听，点一下弹两个确认框。
+     * 交给容器就不会有这个问题：重画多少次，监听都只有一份。
+     */
+    function initAdminDelegates() {
+        $('#admin-users').addEventListener('click', function (e) {
+            var t = e.target.closest('[data-grant],[data-reset],[data-deluser]');
+            if (!t) return;
+            if (t.hasAttribute('data-grant')) return toggleAdmin(t.getAttribute('data-grant'));
+            if (t.hasAttribute('data-reset')) return adminResetPassword(t.getAttribute('data-reset'));
+            return adminDeleteUser(t.getAttribute('data-deluser'));
         });
-        $$('#admin-users [data-deluser]').forEach(function (btn) {
-            btn.addEventListener('click', function () { adminDeleteUser(btn.getAttribute('data-deluser')); });
-        });
-        $$('#admin-groups [data-delgroup]').forEach(function (btn) {
-            btn.addEventListener('click', function () { adminDeleteGroup(btn.getAttribute('data-delgroup')); });
+        $('#admin-groups').addEventListener('click', function (e) {
+            var t = e.target.closest('[data-delgroup]');
+            if (t) adminDeleteGroup(t.getAttribute('data-delgroup'));
         });
     }
 
@@ -576,6 +615,66 @@
             state.admin = await API.adminOverview();
             renderAdmin();
         } catch (e) { toast(e.message, true); }
+    }
+
+    /**
+     * 重置密码。弹一次确认，然后把新密码显示出来 —— 这一步是**唯一**
+     * 能看到明文的地方，关掉就再也拿不回来了，所以界面上要说清楚。
+     */
+    async function adminResetPassword(id) {
+        var u = adminUserById(id);
+        if (!u) return;
+        var ok = await askConfirm(
+            '重置密码',
+            '「' + u.nickname + '」现在的密码会被作废，TA 的所有登录状态也会立刻失效。' +
+            '原密码谁也看不到、也还原不了，只能换一个新的。',
+            '重置'
+        );
+        if (!ok) return;
+        try {
+            var r = await API.adminResetPassword(id);
+            await showTempPassword(r.nickname, r.password);
+            state.admin = await API.adminOverview();
+            renderAdmin();
+        } catch (e) { toast(e.message, true); }
+    }
+
+    /** 新密码只出现这一次，所以给个大号可复制的框，而不是一闪而过的 toast */
+    function showTempPassword(nickname, password) {
+        return new Promise(function (resolve) {
+            var modal = document.createElement('div');
+            modal.className = 'modal';
+            modal.innerHTML =
+                '<div class="inner" style="max-width:340px">' +
+                '<h2 style="font-size:16px;margin-bottom:8px">新的临时密码</h2>' +
+                '<p class="tiny" style="margin-bottom:12px">' +
+                '发给「<b></b>」本人，让 TA 登录后自己改掉。' +
+                '<br><b>关掉这个框就再也看不到它了。</b></p>' +
+                '<div class="secret" id="tp-value"></div>' +
+                '<div class="row" style="margin-top:12px">' +
+                '<button class="btn secondary" data-x="copy">复制</button>' +
+                '<button class="btn" data-x="ok">我记下了</button>' +
+                '</div></div>';
+            $('p b', modal).textContent = nickname;
+
+            var val = $('.secret', modal);
+            val.textContent = password;
+            val.addEventListener('click', function () { copyText(password); });
+
+            modal.addEventListener('click', function (e) {
+                var x = e.target.getAttribute && e.target.getAttribute('data-x');
+                if (x === 'copy') {
+                    copyText(password);
+                    e.target.textContent = '已复制';
+                    return;
+                }
+                if (x === 'ok') {
+                    document.body.removeChild(modal);
+                    resolve(true);
+                }
+            });
+            document.body.appendChild(modal);
+        });
     }
 
     async function adminDeleteGroup(code) {
@@ -722,6 +821,7 @@
         $('#btn-local').addEventListener('click', function () { show('local', { title: '本地快速比对', back: goHome }); initLocalOnce(); });
         $('#btn-open-admin').addEventListener('click', function () { openAdmin(); });
         $('#btn-admin').addEventListener('click', function () { openAdmin(); });
+        initAdminDelegates();
         $('#admin-user-filter').addEventListener('input', function (e) {
             renderAdminUsers(e.target.value.trim());
         });

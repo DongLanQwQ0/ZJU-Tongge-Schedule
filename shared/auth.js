@@ -29,6 +29,21 @@ function newGroupCode() {
     return String(crypto.randomInt(10000000, 100000000));
 }
 
+/**
+ * 生成临时密码，给管理员「重置密码」用。
+ *
+ * 用无歧义字符表：去掉 0/O、1/l/I 这些抄写时容易看错的，
+ * 因为这东西是要管理员口头/发消息转达给同学的。
+ * 12 位 × 56 种字符 ≈ 70 bit 熵，足够扛住在线爆破。
+ */
+function newTempPassword() {
+    const alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes = crypto.randomBytes(12);
+    let out = '';
+    for (let i = 0; i < 12; i++) out += alphabet[bytes[i] % alphabet.length];
+    return out;
+}
+
 /** 由明文密码与盐推出哈希（hex） */
 async function hashPassword(password, saltHex) {
     const buf = await scrypt(String(password), Buffer.from(saltHex, 'hex'), SCRYPT_PARAMS.keylen, {
@@ -64,6 +79,7 @@ module.exports = {
     makeSalt,
     newToken,
     newGroupCode,
+    newTempPassword,
     hashPassword,
     safeEqualHex,
     verifyPassword,

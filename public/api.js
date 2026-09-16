@@ -129,6 +129,9 @@
         adminDeleteUser: function (userId) {
             return request('/api/admin/users/' + encodeURIComponent(userId), 'DELETE', {});
         },
+        adminResetPassword: function (userId) {
+            return request('/api/admin/users/' + encodeURIComponent(userId) + '/reset-password', 'POST', {});
+        },
         adminDeleteGroup: function (code) {
             return request('/api/admin/groups/' + encodeURIComponent(code), 'DELETE', {});
         },

@@ -16,6 +16,7 @@ const auth = require('./auth.js');
 
 const SESSION_TTL = 90 * 86400000;      // 会话 90 天
 const GROUP_TTL = 180 * 86400000;       // 群组 180 天不活动即清理
+const DORMANT_DAYS = 30;                // 没传课表 + 这么多天没登录 = 待清理
 const MAX_MEMBERS = 50;
 const MAX_COURSES = 500;
 const MAX_GROUP_NAME = 20;
@@ -253,8 +254,12 @@ function createStore(dataDir) {
                 pwHash: hash,
                 courses: [],
                 regIp: ip,
+                // 注册即登录（接口会直接返回 token），所以这里也算第一次登录
+                lastLoginAt: ts,
+                lastLoginIp: ip,
+                loginCount: 1,
                 createdAt: ts,
-                updatedAt: now()
+                updatedAt: ts
             };
             db.users.push(user);
 
@@ -396,6 +401,31 @@ function createStore(dataDir) {
             await revokeUserSessions(id);
             return user;
         });
+    }
+
+    /**
+     * 管理员重置密码。
+     *
+     * 「重置」而不是「找回」—— 原密码没人能看见，也没人能还原：盘上只有
+     * scrypt 哈希和盐，单向。所以只能把旧的扔掉、换一个新的。
+     * 返回的明文**只在这一刻存在**，不落盘、不进日志，由调用方转达给本人。
+     */
+    async function resetUserPassword(id) {
+        const got = await withLock('users', async () => {
+            const db = await readJson(USERS, emptyUsers);
+            const user = (db.users || []).find((u) => u.id === id);
+            if (!user) throw fail(404, '账号不存在');
+            const password = auth.newTempPassword();
+            const salt = auth.makeSalt();
+            user.pwSalt = salt;
+            user.pwHash = await auth.hashPassword(password, salt);
+            user.updatedAt = now();
+            await writeJsonAtomic(USERS, db);
+            return { nickname: user.nickname, password };
+        });
+        // 锁外再吊销会话，别把 users 锁和 sessions 锁叠在一起
+        await revokeUserSessions(id);
+        return got;
     }
 
     /** 登录：找不到用户与密码错误返回同一文案，避免账号枚举 */
@@ -809,23 +839,58 @@ function createStore(dataDir) {
     // ---------------------------------------------------------------- 管理
 
     /**
+     * 记一次成功登录：最后登录时间、来源 IP、累计次数。
+     *
+     * 刻意不在 verifyLogin 里做 —— 那个函数还被「改密码时验旧密码」和
+     * 「注销账号时验密码」调用，那两处并不是登录，记进去就把数据污染了。
+     * 只有 /api/login 这条路径该调它。
+     */
+    async function noteLogin(userId, ip) {
+        return withLock('users', async () => {
+            const db = await readJson(USERS, emptyUsers);
+            const user = (db.users || []).find((u) => u.id === userId);
+            if (!user) return null;
+            user.lastLoginAt = now();
+            user.lastLoginIp = String(ip || '');
+            user.loginCount = (user.loginCount || 0) + 1;
+            await writeJsonAtomic(USERS, db);
+            return user;
+        });
+    }
+
+    /**
      * 管理页要的全量账号一览。
      * 手工挑字段，**不是**把用户记录摊开 —— 免得哪天加了新字段就顺手漏出去。
      * pwSalt / pwHash 从一开始就不在这个列表里。
+     *
+     * 这里只把事实摆出来（时间、IP、次数），不打「可疑」标签 ——
+     * 同一个同学在手机和电脑上登录，IP 本来就不一样。
      */
     async function listAdminUsers() {
         const users = await readUsers();
-        return users.map((u) => ({
-            id: u.id,
-            nickname: u.nickname,
-            courseCount: (u.courses || []).length,
-            regIp: u.regIp || '',
-            createdAt: u.createdAt || 0,
-            updatedAt: u.updatedAt || 0,
-            admin: !!u.admin,
-            suspect: !!u.suspect,
-            suspectReason: u.suspectReason || ''
-        }));
+        const ts = now();
+        return users.map((u) => {
+            const courseCount = (u.courses || []).length;
+            // 「最后活动」：登录过就按最后登录算，否则按注册时间
+            const lastSeen = u.lastLoginAt || u.createdAt || 0;
+            const idleDays = lastSeen ? Math.floor((ts - lastSeen) / 86400000) : 0;
+            return {
+                id: u.id,
+                nickname: u.nickname,
+                courseCount,
+                regIp: u.regIp || '',
+                regAt: u.createdAt || 0,
+                lastLoginAt: u.lastLoginAt || 0,
+                lastLoginIp: u.lastLoginIp || '',
+                loginCount: u.loginCount || 0,
+                idleDays,
+                // 待清理：没传过课表，而且很久没露面
+                dormant: courseCount === 0 && idleDays >= DORMANT_DAYS,
+                admin: !!u.admin,
+                suspect: !!u.suspect,
+                suspectReason: u.suspectReason || ''
+            };
+        });
     }
 
     async function countAdmins() {
@@ -834,8 +899,7 @@ function createStore(dataDir) {
     }
 
     /** 授 / 撤管理员。只翻一个布尔标记，密码仍然是原来的 scrypt 哈希，不碰 */
-    async function setUserAdmin(id, admin) {
-        return withLock('users', async () => {
+    async function setUserAdmin(id, admin) {        return withLock('users', async () => {
             const db = await readJson(USERS, emptyUsers);
             const user = (db.users || []).find((u) => u.id === id);
             if (!user) throw fail(404, '账号不存在');
@@ -935,6 +999,7 @@ function createStore(dataDir) {
         setSelfRemark,
         deleteUser,
         verifyLogin,
+        noteLogin,
         appendAudit,
         listSuspects,
         // 管理
@@ -942,6 +1007,7 @@ function createStore(dataDir) {
         listAdminGroups,
         countAdmins,
         setUserAdmin,
+        resetUserPassword,
         deleteGroupAsAdmin,
         readAudit,
         // 会话
@@ -976,6 +1042,7 @@ module.exports = {
     MAX_COURSES,
     MAX_REMARK,
     SUSPECT_IP_COUNT,
+    DORMANT_DAYS,
     SESSION_TTL,
     GROUP_TTL
 };

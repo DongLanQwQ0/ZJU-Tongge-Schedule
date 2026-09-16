@@ -260,6 +260,7 @@ async function createServer(options = {}) {
                 throw fail(401, '昵称或密码不对');
             }
             clearFail(key);
+            await store.noteLogin(user.id, ip);
             const token = await store.createSession(user.id);
             return { userId: user.id, nickname: user.nickname, token };
         }],
@@ -418,6 +419,7 @@ async function createServer(options = {}) {
                     adminCount: users.filter((u) => u.admin).length,
                     groupCount: groups.length,
                     suspectCount: suspects.length,
+                    dormantCount: users.filter((u) => u.dormant).length,
                     courseUploaded: users.filter((u) => u.courseCount > 0).length
                 }
             };
@@ -460,6 +462,20 @@ async function createServer(options = {}) {
                 ip: clientIp(req)
             });
             return { ok: true, transferred: r.transferred, disbanded: r.disbanded };
+        }],
+
+        // 重置密码：没有「找回」这回事，只有换一个新的
+        ['POST', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})\/reset-password$/, async (req, _res, m) => {
+            const { user: admin } = await requireAdmin(req);
+            const r = await store.resetUserPassword(m[1]);
+            store.appendAudit({
+                event: 'admin_reset_password',
+                by: admin.nickname,
+                target: r.nickname,
+                ip: clientIp(req)
+            });
+            // 明文只在这一个响应里出现，别的地方一概不留
+            return { ok: true, nickname: r.nickname, password: r.password };
         }],
 
         // 解散任意群组，不需要是群主

@@ -471,6 +471,18 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .admin-row .overlap { margin-top: 5px; }
 .admin-row .row-note, .admin-row .row-remove { padding: 5px 8px; }
 .admin-row .adt { font-weight: 600; }
+/* 操作按钮竖着摞在右边，别把三颗按钮横着挤成一行把昵称压没 */
+.admin-row .row-acts { display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; }
+.admin-row .row-acts button { width: 100%; text-align: center; }
+
+/* 临时密码：大号等宽、可点即复制。这是唯一一次能看到它的机会 */
+.secret {
+    padding: 12px; border-radius: 11px; cursor: pointer;
+    background: var(--fill); color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 17px; font-weight: 600; letter-spacing: 1.5px;
+    word-break: break-all; user-select: all;
+}
 
 /* ------------------------------------------------------------ 导出 .ics 引导 */
 
