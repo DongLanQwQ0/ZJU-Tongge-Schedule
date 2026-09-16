@@ -424,5 +424,5 @@ test('静态文件：首页可访问，目录穿越被挡', async () => {
     assert.equal(home.status, 200);
     assert.match(home.headers.get('content-type'), /text\/html/);
     const html = await home.text();
-    assert.match(html, /组团上课/);
+    assert.match(html, /同格/);
 });

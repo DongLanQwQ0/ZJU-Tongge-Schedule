@@ -1,5 +1,5 @@
 /**
- * 组团上课网格比对器 —— 局域网服务端。
+ * 同格 —— 找个课搭子一起上课。局域网服务端。
  *
  * 零 npm 依赖，只用 node: 内置模块。`node server.js` 即可启动。
  * 绑定 0.0.0.0，同学连同一个 WiFi 用局域网地址访问即可。
@@ -650,7 +650,7 @@ async function main() {
     const suspects = await server.store.listSuspects().catch(() => []);
     server.listen(server.port, '0.0.0.0', () => {
         console.log('');
-        console.log('  组团上课网格比对器 已启动');
+        console.log(`  ${config.appName} · ${config.tagline}`);
         console.log(`  发起人     ${config.owner}`);
         console.log('  ─────────────────────────────────────────────');
         console.log(`  本机访问   http://localhost:${server.port}`);

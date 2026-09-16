@@ -1,5 +1,5 @@
 /**
- * 组团上课网格比对器 —— 前端主逻辑。
+ * 同格 —— 找个课搭子一起上课。前端主逻辑。
  *
  * 依赖：共享纯函数（DSH.periods / DSH.ics / DSH.weeks / DSH.compare）、API、qrcode、html2canvas。
  */
@@ -143,7 +143,7 @@
         topbar.hidden = id === 'auth';
         $('#btn-back').hidden = !opts.back;
         backTo = opts.back || null;
-        $('#topbar-title').textContent = opts.title || '组团上课';
+        $('#topbar-title').textContent = opts.title || '同格';
         $('#topbar-who').textContent = state.me ? state.me.nickname : '';
         $('#btn-logout').hidden = !state.me;
         // 管理入口挂在顶栏上，任何页面都够得着；普通人看不到这个按钮
@@ -201,7 +201,7 @@
             if (m) return openCompare(m);
             return fallbackHome();
         }
-        if (id === 'auth') return show('auth', { title: '组团上课' });
+        if (id === 'auth') return show('auth', { title: '同格' });
         return fallbackHome();
     }
 
@@ -377,14 +377,14 @@
             state.me = null;
             state.groups = [];
             state.group = null;
-            show('auth', { title: '组团上课', replace: true });
+            show('auth', { title: '同格', replace: true });
         });
     }
 
     // ------------------------------------------------------------ 首页
 
     async function goHome(opts) {
-        show('home', { title: '组团上课', replace: opts && opts.replace });
+        show('home', { title: '同格', replace: opts && opts.replace });
         renderCourseStatus();
         await loadGroups();
     }
@@ -680,7 +680,7 @@
             if (r.transferred && r.transferred.length) extra += '，' + r.transferred.length + ' 个群已移交';
             if (r.disbanded && r.disbanded.length) extra += '，' + r.disbanded.length + ' 个空群已解散';
             toast('账号已注销' + extra);
-            show('auth', { title: '组团上课', replace: true });
+            show('auth', { title: '同格', replace: true });
         } catch (e) { toast(e.message, true); }
     }
 
@@ -1641,7 +1641,7 @@
     /** 恢复登录状态 / 处理邀请链接 */
     async function restoreSession() {
         if (!API.getToken()) {
-            show('auth', { title: '组团上课', replace: true });
+            show('auth', { title: '同格', replace: true });
             return;
         }
         try {
@@ -1654,7 +1654,7 @@
             }
         } catch (e) {
             if (e.status !== 401 && e.status !== 0) toast(e.message, true);
-            show('auth', { title: '组团上课', replace: true });
+            show('auth', { title: '同格', replace: true });
         }
     }
 
@@ -1683,7 +1683,7 @@
         API.onUnauthorized(function () {
             state.me = null;
             toast('登录状态过期了，请重新登录', true);
-            show('auth', { title: '组团上课', replace: true });
+            show('auth', { title: '同格', replace: true });
         });
 
         initMascot();
