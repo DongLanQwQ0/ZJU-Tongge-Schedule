@@ -118,6 +118,7 @@
         pendingCode: null,
         local: { a: [], b: [], nameA: '', nameB: '', weekIndex: null },
         currentWindow: null,
+        admin: null,
         screen: null
     };
 
@@ -181,6 +182,10 @@
             show('local', { title: '本地快速比对', back: goHome });
             initLocalOnce();
             return;
+        }
+        if (id === 'admin') {
+            if (state.me && state.me.admin) return openAdmin();
+            return fallbackHome();
         }
         if (id === 'group') {
             if (state.group) return openGroup(state.group.code);
@@ -325,6 +330,213 @@
         await loadGroups();
     }
 
+    // ------------------------------------------------------------ 管理页
+
+    var AUDIT_LABEL = {
+        register: '注册',
+        register_blocked: '注册被限流',
+        delete_account: '注销账号',
+        admin_grant: '授予管理员',
+        admin_revoke: '撤销管理员',
+        admin_grant_cli: '授予管理员（命令行）',
+        admin_revoke_cli: '撤销管理员（命令行）',
+        admin_delete_user: '删除账号',
+        admin_delete_group: '解散群组'
+    };
+
+    /** 审计日志一行的说明文字，只挑存在的字段拼 */
+    function auditDetail(e) {
+        var bits = [];
+        if (e.by) bits.push('by ' + e.by);
+        if (e.nickname && e.nickname !== e.target) bits.push(e.nickname);
+        if (e.target) bits.push('→ ' + e.target);
+        if (e.group) bits.push('群「' + e.group + '」');
+        if (e.code && !e.group) bits.push('码 ' + e.code);
+        if (e.ip) bits.push(e.ip);
+        if (e.reason) bits.push(e.reason);
+        if (e.transferred && e.transferred.length) bits.push('移交 ' + e.transferred.join('、'));
+        if (e.disbanded && e.disbanded.length) bits.push('解散 ' + e.disbanded.join('、'));
+        return bits.join(' · ');
+    }
+
+    async function openAdmin() {
+        show('admin', { title: '管理', back: goHome });
+        $('#admin-users').innerHTML = '<div class="spinner">加载中…</div>';
+        try {
+            state.admin = await API.adminOverview();
+        } catch (e) {
+            toast(e.message, true);
+            return fallbackHome();
+        }
+        $('#admin-user-filter').value = '';
+        renderAdmin();
+    }
+
+    function adminUserRow(u) {
+        var tags = '';
+        if (u.admin) tags += '<span class="chip-lv same">管理员</span>';
+        if (u.suspect) tags += '<span class="chip-lv cross">待复核</span>';
+        if (!u.courseCount) tags += '<span class="chip-lv unknown">未传课表</span>';
+        return '<div class="item admin-row">' +
+            '<div class="grow"><div class="title">' + esc(u.nickname) + '</div>' +
+            '<div class="sub">' + u.courseCount + ' 个时段 · 注册 ' + fmtTime(u.createdAt) +
+            (u.regIp ? ' · ' + esc(u.regIp) : '') + '</div>' +
+            (tags ? '<div class="overlap">' + tags + '</div>' : '') +
+            '</div>' +
+            '<button class="row-note" data-grant="' + esc(u.id) + '">' +
+            (u.admin ? '撤管' : '授权') + '</button>' +
+            '<button class="row-remove" data-deluser="' + esc(u.id) + '">删除</button>' +
+            '</div>';
+    }
+
+    function adminGroupRow(g) {
+        return '<div class="item admin-row">' +
+            '<div class="grow"><div class="title">' + esc(g.name) + '</div>' +
+            '<div class="sub">码 ' + esc(g.code) + ' · ' + g.memberCount + ' 人 · 群主 ' + esc(g.owner) +
+            (g.pending ? ' · <b>' + g.pending + ' 条待批</b>' : '') +
+            (g.joinMode === 'approval' ? ' · 需审批' : '') +
+            '</div></div>' +
+            '<button class="row-remove" data-delgroup="' + esc(g.code) + '">解散</button>' +
+            '</div>';
+    }
+
+    function renderAdmin() {
+        var a = state.admin;
+        if (!a) return;
+        var me = state.me ? state.me.nickname : '';
+        $('#admin-me').textContent = me ? (me + '（你）') : '';
+
+        $('#admin-stats').innerHTML = [
+            ['账号', a.stats.userCount],
+            ['管理员', a.stats.adminCount],
+            ['已传课表', a.stats.courseUploaded],
+            ['群组', a.stats.groupCount],
+            ['待复核', a.stats.suspectCount]
+        ].map(function (p) {
+            return '<div class="stat"><b>' + p[1] + '</b><span>' + p[0] + '</span></div>';
+        }).join('');
+
+        $('#admin-user-count').textContent = a.users.length + ' 个';
+        $('#admin-group-count').textContent = a.groups.length + ' 个';
+
+        renderAdminUsers('');
+
+        $('#admin-groups').innerHTML = a.groups.length
+            ? a.groups.map(adminGroupRow).join('')
+            : '<div class="empty">一个群组都没有</div>';
+
+        var sc = $('#admin-suspect-card');
+        sc.hidden = !a.suspects.length;
+        $('#admin-suspect-count').textContent = a.suspects.length + ' 个';
+        $('#admin-suspects').innerHTML = a.suspects.map(function (s) {
+            return '<div class="item admin-row"><div class="grow">' +
+                '<div class="title">' + esc(s.nickname) + '</div>' +
+                '<div class="sub">' + esc(s.regIp) + ' · ' + esc(s.reason) +
+                ' · ' + fmtTime(s.createdAt) + '</div></div></div>';
+        }).join('');
+
+        $('#admin-audit').innerHTML = a.audit.length
+            ? a.audit.map(function (e) {
+                return '<div class="item admin-row"><div class="grow">' +
+                    '<div class="title adt">' + esc(AUDIT_LABEL[e.event] || e.event) + '</div>' +
+                    '<div class="sub">' + fmtTime(e.at) + (auditDetail(e) ? ' · ' + esc(auditDetail(e)) : '') +
+                    '</div></div></div>';
+            }).join('')
+            : '<div class="empty">还没有日志</div>';
+
+        bindAdminActions();
+    }
+
+    function renderAdminUsers(q) {
+        var users = (state.admin && state.admin.users) || [];
+        if (q) {
+            var k = q.toLowerCase();
+            users = users.filter(function (u) {
+                return u.nickname.toLowerCase().indexOf(k) >= 0 ||
+                    (u.regIp || '').indexOf(k) >= 0;
+            });
+        }
+        $('#admin-users').innerHTML = users.length
+            ? users.map(adminUserRow).join('')
+            : '<div class="empty">没有匹配的账号</div>';
+        bindAdminActions();
+    }
+
+    function bindAdminActions() {
+        $$('#admin-users [data-grant]').forEach(function (btn) {
+            btn.addEventListener('click', function () { toggleAdmin(btn.getAttribute('data-grant')); });
+        });
+        $$('#admin-users [data-deluser]').forEach(function (btn) {
+            btn.addEventListener('click', function () { adminDeleteUser(btn.getAttribute('data-deluser')); });
+        });
+        $$('#admin-groups [data-delgroup]').forEach(function (btn) {
+            btn.addEventListener('click', function () { adminDeleteGroup(btn.getAttribute('data-delgroup')); });
+        });
+    }
+
+    function adminUserById(id) {
+        return ((state.admin && state.admin.users) || []).filter(function (u) { return u.id === id; })[0];
+    }
+
+    async function toggleAdmin(id) {
+        var u = adminUserById(id);
+        if (!u) return;
+        var on = !u.admin;
+        var ok = await askConfirm(
+            on ? '授予管理员' : '撤销管理员',
+            on
+                ? '「' + u.nickname + '」将能看到全部账号、群组和审计日志，也能删账号。'
+                : '「' + u.nickname + '」将失去管理页的访问权限，账号本身不受影响。',
+            on ? '授予' : '撤销'
+        );
+        if (!ok) return;
+        try {
+            await API.adminSetAdmin(id, on);
+            toast(on ? '已授予「' + u.nickname + '」管理员' : '已撤销「' + u.nickname + '」的管理员');
+            state.admin = await API.adminOverview();
+            renderAdmin();
+        } catch (e) { toast(e.message, true); }
+    }
+
+    async function adminDeleteUser(id) {
+        var u = adminUserById(id);
+        if (!u) return;
+        var ok = await askConfirm(
+            '删除账号',
+            '「' + u.nickname + '」（' + u.courseCount + ' 个课表时段）会被彻底删除，' +
+            'TA 建的群会移交给最早入群的成员，无法恢复。',
+            '删除'
+        );
+        if (!ok) return;
+        try {
+            var r = await API.adminDeleteUser(id);
+            var extra = [];
+            if (r.transferred && r.transferred.length) extra.push('移交 ' + r.transferred.join('、'));
+            if (r.disbanded && r.disbanded.length) extra.push('解散空群 ' + r.disbanded.join('、'));
+            toast('已删除「' + u.nickname + '」' + (extra.length ? '（' + extra.join('；') + '）' : ''));
+            state.admin = await API.adminOverview();
+            renderAdmin();
+        } catch (e) { toast(e.message, true); }
+    }
+
+    async function adminDeleteGroup(code) {
+        var g = ((state.admin && state.admin.groups) || []).filter(function (x) { return x.code === code; })[0];
+        if (!g) return;
+        var ok = await askConfirm(
+            '解散群组',
+            '「' + g.name + '」（' + g.memberCount + ' 人）会被解散，' +
+            '群里的课表本身不受影响，但邀请码立刻失效，无法恢复。',
+            '解散'
+        );
+        if (!ok) return;
+        try {
+            await API.adminDeleteGroup(code);
+            toast('已解散「' + g.name + '」');
+            state.admin = await API.adminOverview();
+            renderAdmin();
+        } catch (e) { toast(e.message, true); }
+    }
+
     function renderCourseStatus() {
         var n = state.me && state.me.courseCount ? state.me.courseCount : 0;
         var txt = n ? ('已上传 ' + n + ' 个时段') : '未上传';
@@ -334,6 +546,8 @@
         badge.className = 'badge' + (n ? ' ok' : '');
         $('#home-drop-text').textContent = n ? '点击替换 .ics 课表文件' : '点击选择 .ics / .txt 课表文件';
         $('#home-account-name').textContent = state.me ? state.me.nickname : '';
+        // 管理入口只给超级用户看；服务端每个 /api/admin/* 还会再查一次身份
+        $('#admin-entry-card').hidden = !(state.me && state.me.admin);
     }
 
     async function uploadMyCourses(file, badgeEl, dropEl) {
@@ -447,6 +661,10 @@
 
         $('#btn-logout').addEventListener('click', logout);
         $('#btn-local').addEventListener('click', function () { show('local', { title: '本地快速比对', back: goHome }); initLocalOnce(); });
+        $('#btn-open-admin').addEventListener('click', function () { openAdmin(); });
+        $('#admin-user-filter').addEventListener('input', function (e) {
+            renderAdminUsers(e.target.value.trim());
+        });
     }
 
     async function joinByCode(code) {

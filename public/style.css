@@ -444,6 +444,24 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
    有透明通道的图四角本来就什么都没有，加了也不影响。 */
 .foot-mascot.tile { border-radius: 9px; opacity: .72; }
 
+/* ------------------------------------------------------------ 管理页 */
+
+.stats { display: flex; flex-wrap: wrap; gap: 8px; }
+.stat {
+    flex: 1 1 70px; text-align: center; padding: 10px 4px;
+    background: var(--fill-soft); border-radius: 11px;
+}
+.stat b { display: block; font-size: 18px; font-weight: 700; }
+.stat span { display: block; font-size: 11px; color: var(--text-2); margin-top: 2px; }
+
+/* 管理页是「一屏尽量多塞几行」的场景，比普通列表挤一些 */
+.admin-row { padding: 10px 12px; gap: 8px; }
+.admin-row .title { font-size: 14px; }
+.admin-row .sub { font-size: 11px; }
+.admin-row .overlap { margin-top: 5px; }
+.admin-row .row-note, .admin-row .row-remove { padding: 5px 8px; }
+.admin-row .adt { font-weight: 600; }
+
 /* ------------------------------------------------------------ 导出 .ics 引导 */
 
 .link-btn {

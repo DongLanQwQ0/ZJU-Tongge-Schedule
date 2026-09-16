@@ -108,6 +108,42 @@
         </p>
         <button class="btn danger" id="btn-delete-account">注销账号</button>
     </div>
+
+    <div class="card" id="admin-entry-card" hidden>
+        <h2>管理 <span class="sub">仅超级用户可见</span></h2>
+        <p class="tiny" style="margin-bottom:10px">全部账号、群组与审计日志。</p>
+        <button class="btn ghost" id="btn-open-admin">打开管理页</button>
+    </div>
+</section>
+
+<!-- ==================================================== 管理页 -->
+<section class="screen" id="screen-admin">
+    <div class="card">
+        <h2>概览 <span class="sub" id="admin-me"></span></h2>
+        <div class="stats" id="admin-stats"></div>
+    </div>
+
+    <div class="card">
+        <h2>账号 <span class="sub" id="admin-user-count"></span></h2>
+        <input class="input" id="admin-user-filter" placeholder="按昵称或 IP 筛一下">
+        <div class="list" id="admin-users" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+        <h2>群组 <span class="sub" id="admin-group-count"></span></h2>
+        <div class="list" id="admin-groups"></div>
+    </div>
+
+    <div class="card" id="admin-suspect-card" hidden>
+        <h2>异常注册 <span class="sub" id="admin-suspect-count"></span></h2>
+        <p class="tiny" style="margin-bottom:10px">同一 IP 短时间内冒出一堆账号，整簇都会被标出来。</p>
+        <div class="list" id="admin-suspects"></div>
+    </div>
+
+    <div class="card">
+        <h2>审计日志 <span class="sub">最近 200 条，新的在上</span></h2>
+        <div class="list" id="admin-audit"></div>
+    </div>
 </section>
 
 <!-- ==================================================== 群组页 -->

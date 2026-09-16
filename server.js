@@ -202,6 +202,17 @@ async function createServer(options = {}) {
         return { user, token: m[1].trim() };
     }
 
+    /**
+     * 管理员门禁。在 requireUser 之上加一道。
+     * 注意：先确认登录（401），再确认权限（403）—— 别让没登录的人
+     * 通过状态码差异探出「这个接口存在」。
+     */
+    async function requireAdmin(req) {
+        const ctx = await requireUser(req);
+        if (!ctx.user.admin) throw fail(403, '需要管理员权限');
+        return ctx;
+    }
+
     const routes = [
         // ---- 元信息
         ['GET', /^\/api\/meta$/, async () => ({
@@ -386,6 +397,83 @@ async function createServer(options = {}) {
             const { user } = await requireUser(req);
             await store.deleteGroup(validateCode(m[1]), user.id);
             return { ok: true };
+        }],
+
+        // ---- 管理（全部要管理员，见 requireAdmin）
+        ['GET', /^\/api\/admin\/overview$/, async (req) => {
+            await requireAdmin(req);
+            const [users, groups, suspects, audit] = await Promise.all([
+                store.listAdminUsers(),
+                store.listAdminGroups(),
+                store.listSuspects(),
+                store.readAudit(200)
+            ]);
+            return {
+                users,
+                groups,
+                suspects,
+                audit,
+                stats: {
+                    userCount: users.length,
+                    adminCount: users.filter((u) => u.admin).length,
+                    groupCount: groups.length,
+                    suspectCount: suspects.length,
+                    courseUploaded: users.filter((u) => u.courseCount > 0).length
+                }
+            };
+        }],
+
+        // 授 / 撤管理员
+        ['PUT', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})\/admin$/, async (req, _res, m) => {
+            const { user } = await requireAdmin(req);
+            const body = await readBody(req);
+            const on = !!body.admin;
+            const targetId = m[1];
+
+            // 撤自己之前先确认还有别人能管 —— 否则这扇门就永久锁死了
+            if (!on && targetId === user.id) {
+                if (await store.countAdmins() <= 1) {
+                    throw fail(400, '你是唯一的管理员，先给别人授权再撤自己');
+                }
+            }
+            const u = await store.setUserAdmin(targetId, on);
+            store.appendAudit({
+                event: on ? 'admin_grant' : 'admin_revoke',
+                by: user.nickname,
+                target: u.nickname,
+                ip: clientIp(req)
+            });
+            return { ok: true };
+        }],
+
+        // 删账号（比用户自己注销更强，但仍要求管理员身份）
+        ['DELETE', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})$/, async (req, _res, m) => {
+            const { user } = await requireAdmin(req);
+            if (m[1] === user.id) throw fail(400, '不能删自己，换个管理员账号来操作');
+            const r = await store.deleteUser(m[1]);
+            store.appendAudit({
+                event: 'admin_delete_user',
+                by: user.nickname,
+                target: r.user.nickname,
+                transferred: r.transferred,
+                disbanded: r.disbanded,
+                ip: clientIp(req)
+            });
+            return { ok: true, transferred: r.transferred, disbanded: r.disbanded };
+        }],
+
+        // 解散任意群组，不需要是群主
+        ['DELETE', /^\/api\/admin\/groups\/(\d{6}|\d{8})$/, async (req, _res, m) => {
+            const { user } = await requireAdmin(req);
+            const g = await store.deleteGroupAsAdmin(validateCode(m[1]));
+            store.appendAudit({
+                event: 'admin_delete_group',
+                by: user.nickname,
+                group: g.name,
+                code: g.code,
+                ip: clientIp(req)
+            });
+            return { ok: true };
         }]
     ];
 
@@ -498,17 +586,66 @@ async function createServer(options = {}) {
     return server;
 }
 
-/** 解析命令行参数：--port <端口> */
+/**
+ * 解析命令行参数：
+ *   --port <端口>
+ *   --make-admin <昵称>     把这个账号设为管理员
+ *   --revoke-admin <昵称>   取消管理员
+ *
+ * 授权走命令行而不是网页，是因为这是**本机操作** —— 能敲这条命令就说明
+ * 你本来就摸得到 data/ 目录，不需要再发明一套引导密码。
+ * 也正因如此，这里全程不碰密码：只翻 user.admin 这一个布尔值。
+ */
 function parseArgs(argv) {
     const opts = {};
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--port') opts.port = Number(argv[++i]);
+        else if (argv[i] === '--make-admin') opts.makeAdmin = argv[++i];
+        else if (argv[i] === '--revoke-admin') opts.revokeAdmin = argv[++i];
     }
     return opts;
 }
 
+/** 按昵称找账号（忽略大小写，和登录口径一致） */
+async function findByName(store, nickname) {
+    const want = String(nickname || '').trim();
+    if (!want) return null;
+    const users = await store.readUsers();
+    return users.find((u) => u.nickname.toLowerCase() === want.toLowerCase()) || null;
+}
+
+async function runAdminCli(opts) {
+    const store = createStore(opts.dataDir || DATA);
+    await store.init();
+
+    const on = opts.makeAdmin !== undefined;
+    const nickname = on ? opts.makeAdmin : opts.revokeAdmin;
+    const user = await findByName(store, nickname);
+    if (!user) {
+        console.error(`\n  找不到昵称是「${nickname}」的账号。`);
+        console.error('  先在网页上把这个账号注册出来，再回来执行这条命令。\n');
+        process.exit(1);
+    }
+
+    await store.setUserAdmin(user.id, on);
+    await store.appendAudit({
+        event: on ? 'admin_grant_cli' : 'admin_revoke_cli',
+        by: 'cli',
+        target: user.nickname
+    });
+    console.log(`\n  ${on ? '已设为管理员' : '已取消管理员'}：${user.nickname}  (${user.id})`);
+    console.log(`  当前管理员共 ${await store.countAdmins()} 个。\n`);
+}
+
 async function main() {
-    const server = await createServer(parseArgs(process.argv.slice(2)));
+    const opts = parseArgs(process.argv.slice(2));
+
+    // 授权是离线操作，做完就退出，不启动服务器
+    if (opts.makeAdmin !== undefined || opts.revokeAdmin !== undefined) {
+        return runAdminCli(opts);
+    }
+
+    const server = await createServer(opts);
     const ifaces = lanInterfaces();
     const suspects = await server.store.listSuspects().catch(() => []);
     server.listen(server.port, '0.0.0.0', () => {

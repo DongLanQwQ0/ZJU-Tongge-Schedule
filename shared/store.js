@@ -193,6 +193,7 @@ function createStore(dataDir) {
             courses: u.courses || [],
             courseCount: (u.courses || []).length,
             remarks: (u.remarks && typeof u.remarks === 'object') ? u.remarks : {},
+            admin: !!u.admin,
             updatedAt: u.updatedAt,
             createdAt: u.createdAt
         };
@@ -805,6 +806,119 @@ function createStore(dataDir) {
         return removed;
     }
 
+    // ---------------------------------------------------------------- 管理
+
+    /**
+     * 管理页要的全量账号一览。
+     * 手工挑字段，**不是**把用户记录摊开 —— 免得哪天加了新字段就顺手漏出去。
+     * pwSalt / pwHash 从一开始就不在这个列表里。
+     */
+    async function listAdminUsers() {
+        const users = await readUsers();
+        return users.map((u) => ({
+            id: u.id,
+            nickname: u.nickname,
+            courseCount: (u.courses || []).length,
+            regIp: u.regIp || '',
+            createdAt: u.createdAt || 0,
+            updatedAt: u.updatedAt || 0,
+            admin: !!u.admin,
+            suspect: !!u.suspect,
+            suspectReason: u.suspectReason || ''
+        }));
+    }
+
+    async function countAdmins() {
+        const users = await readUsers();
+        return users.filter((u) => u.admin).length;
+    }
+
+    /** 授 / 撤管理员。只翻一个布尔标记，密码仍然是原来的 scrypt 哈希，不碰 */
+    async function setUserAdmin(id, admin) {
+        return withLock('users', async () => {
+            const db = await readJson(USERS, emptyUsers);
+            const user = (db.users || []).find((u) => u.id === id);
+            if (!user) throw fail(404, '账号不存在');
+            if (admin) user.admin = true;
+            else delete user.admin;
+            user.updatedAt = now();
+            await writeJsonAtomic(USERS, db);
+            return user;
+        });
+    }
+
+    /** 管理页要的全量群组一览 */
+    async function listAdminGroups() {
+        await fsp.mkdir(GROUPS, { recursive: true });
+        const files = await fsp.readdir(GROUPS);
+        const users = await readUsers();
+        const byId = new Map(users.map((u) => [u.id, u]));
+        const out = [];
+        for (const f of files) {
+            if (!/^\d{6,8}\.json$/.test(f)) continue;
+            const g = await readJson(path.join(GROUPS, f), () => null);
+            if (!g || !Array.isArray(g.members)) continue;
+            const owner = byId.get(g.creatorId);
+            out.push({
+                code: g.code,
+                name: g.name,
+                memberCount: g.members.length,
+                owner: owner ? owner.nickname : '（已注销）',
+                createdAt: g.createdAt || 0,
+                updatedAt: g.updatedAt || 0,
+                joinMode: groupSettings(g).joinMode,
+                pending: Array.isArray(g.requests) ? g.requests.length : 0
+            });
+        }
+        return out.sort((a, b) => b.createdAt - a.createdAt);
+    }
+
+    /** 管理员解散任意群组，不需要是群主 */
+    async function deleteGroupAsAdmin(code) {
+        const c = validateCode(code);
+        return withLock(`group:${c}`, async () => {
+            const g = await readJson(groupFile(c), () => null);
+            if (!g) throw fail(404, '群组不存在或已解散');
+            await fsp.unlink(groupFile(c)).catch(() => {});
+            return g;
+        });
+    }
+
+    /**
+     * 审计日志的末尾几条，最新的在前。
+     * 只从文件尾部读 256KB —— 日志是追加写的，跑久了可能很大，
+     * 没必要为了看最近 200 行把整个文件读进内存。
+     */
+    async function readAudit(limit) {
+        const want = Math.max(1, Math.min(Number(limit) || 200, 1000));
+        let st;
+        try {
+            st = await fsp.stat(AUDIT);
+        } catch (_) {
+            return [];
+        }
+        const CAP = 256 * 1024;
+        const start = Math.max(0, st.size - CAP);
+        const len = st.size - start;
+        if (len <= 0) return [];
+
+        const fh = await fsp.open(AUDIT, 'r');
+        try {
+            const buf = Buffer.alloc(len);
+            await fh.read(buf, 0, len, start);
+            const lines = buf.toString('utf8').split('\n').filter(Boolean);
+            // 从中间截断时，第一行可能是半截，丢掉
+            if (start > 0) lines.shift();
+            return lines
+                .slice(-want)
+                .map((l) => { try { return JSON.parse(l); } catch (_) { return null; } })
+                .filter(Boolean)
+                .reverse();
+        } finally {
+            await fh.close();
+        }
+    }
+
     return {
         dataDir,
         init,
@@ -823,6 +937,13 @@ function createStore(dataDir) {
         verifyLogin,
         appendAudit,
         listSuspects,
+        // 管理
+        listAdminUsers,
+        listAdminGroups,
+        countAdmins,
+        setUserAdmin,
+        deleteGroupAsAdmin,
+        readAudit,
         // 会话
         createSession,
         resolveSession,

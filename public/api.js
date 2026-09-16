@@ -118,6 +118,18 @@
         },
         myGroups: function () { return request('/api/me/groups'); },
 
+        // 管理页（服务端还会再查一次管理员身份，前端藏入口只是不碍眼）
+        adminOverview: function () { return request('/api/admin/overview'); },
+        adminSetAdmin: function (userId, admin) {
+            return request('/api/admin/users/' + encodeURIComponent(userId) + '/admin', 'PUT', { admin: !!admin });
+        },
+        adminDeleteUser: function (userId) {
+            return request('/api/admin/users/' + encodeURIComponent(userId), 'DELETE', {});
+        },
+        adminDeleteGroup: function (code) {
+            return request('/api/admin/groups/' + encodeURIComponent(code), 'DELETE', {});
+        },
+
         createGroup: function (name) { return request('/api/groups', 'POST', { name: name }); },
         joinGroup: function (code) { return request('/api/groups/' + code + '/join', 'POST', {}); },
         groupDetail: function (code) { return request('/api/groups/' + code); },
