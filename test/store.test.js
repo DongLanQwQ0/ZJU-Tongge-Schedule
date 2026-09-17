@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createStore, validateCourses, sanitizeNickname, validatePassword } = require('../shared/store.js');
+const { createStore, sessionKey, validateCourses, sanitizeNickname, validatePassword } = require('../shared/store.js');
 
 function tmpStore() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-store-'));
@@ -319,9 +319,10 @@ test('清理：过期会话被移除', async () => {
 
     // 会话表现在常驻内存（读路径不再每请求读盘），所以不能靠改文件来伪造过期 ——
     // 得改内存里的那份，再落盘，这样才是「重启后仍过期」的真实状态。
+    // 键是令牌的 sha256（明文令牌不落盘），所以先用 sessionKey 换算一下。
     const f = path.join(dir, 'sessions.json');
     const db = JSON.parse(fs.readFileSync(f, 'utf8'));
-    db.sessions[token].lastSeen = Date.now() - 100 * 86400000;
+    db.sessions[sessionKey(token)].lastSeen = Date.now() - 100 * 86400000;
     fs.writeFileSync(f, JSON.stringify(db), 'utf8');
 
     // 重建一个 store，从盘上加载这份「100 天前活动过」的表

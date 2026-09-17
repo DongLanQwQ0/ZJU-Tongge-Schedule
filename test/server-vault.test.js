@@ -193,3 +193,98 @@ test('迁移之后：服务能起，接口端到端正常，文件里没有明�
         await stop();
     }
 });
+
+// ---------------------------------------------------------------- 超管与备注访问
+
+/** 造一个「超管 + 普通管理员 + 一位同学」的场景（同学给小管起过备注） */
+async function seedSuperScene(dir) {
+    const store = createStore(dir);
+    await store.init();
+    const boss = await store.createUser('老板', 'password1');
+    const adm = await store.createUser('小管', 'password2');
+    const pal = await store.createUser('同学', 'password3');
+    await store.setUserAdmin(adm.id, true);
+    await store.transferSuper(boss.id);
+    await store.setRemark(pal.id, adm.id, '外号小管');
+    return { store, boss, adm, pal };
+}
+
+const login = async (base, nickname, password) => {
+    const r = await api(base, '/api/login', { method: 'POST', body: { nickname, password } });
+    assert.equal(r.status, 200, `登录失败：${nickname}`);
+    return r.body.token;
+};
+
+test('超管的权限谁都动不了：撤不掉、删不掉、重置不了密码', async () => {
+    const dir = newDir();
+    const { store, boss, adm } = await seedSuperScene(dir);
+    const { base, stop } = await startServer({ dataDir: dir, vault: false });
+    try {
+        const adminTok = await login(base, '小管', 'password2');
+        const bossTok = await login(base, '老板', 'password1');
+
+        // 普通管理员碰不到超管（这三条在改造前都是能过的，尤其是删号和重置密码）
+        assert.equal((await api(base, `/api/admin/users/${boss.id}/admin`, {
+            method: 'PUT', token: adminTok, body: { admin: false }
+        })).status, 403);
+        assert.equal((await api(base, `/api/admin/users/${boss.id}`, {
+            method: 'DELETE', token: adminTok
+        })).status, 403);
+        assert.equal((await api(base, `/api/admin/users/${boss.id}/reset-password`, {
+            method: 'POST', token: adminTok, body: {}
+        })).status, 403);
+
+        // 超管自己也撤不掉自己
+        assert.equal((await api(base, `/api/admin/users/${boss.id}/admin`, {
+            method: 'PUT', token: bossTok, body: { admin: false }
+        })).status, 403);
+        // 也不能删自己（先撞上"不能删自己"那条守卫）
+        const selfDel = await api(base, `/api/admin/users/${boss.id}`, { method: 'DELETE', token: bossTok });
+        assert.ok([400, 403].includes(selfDel.status), `实际 ${selfDel.status}`);
+
+        // 把别人提成管理员不会顺带产生第二个超管
+        await api(base, `/api/admin/users/${adm.id}/admin`, {
+            method: 'PUT', token: bossTok, body: { admin: true }
+        });
+        assert.equal(await store.countSupers(), 1);
+        assert.equal(!!(await store.getUser(adm.id)).super, false);
+
+        // 仓储层也拦着（纵深防御：将来新增一条路由忘了守卫也不会漏）
+        await assert.rejects(() => store.setUserAdmin(boss.id, false), /超级管理员的权限不能改/);
+        await assert.rejects(() => store.deleteUser(boss.id), /超级管理员不能被删除/);
+        await assert.rejects(() => store.resetUserPassword(boss.id), /不能重置超级管理员的密码/);
+    } finally {
+        await stop();
+    }
+});
+
+test('备注访问接口：只有超管能用，且只记审计不记内容', async () => {
+    const dir = newDir();
+    const { store, adm, pal } = await seedSuperScene(dir);
+    const { base, stop } = await startServer({ dataDir: dir, vault: false });
+    try {
+        const adminTok = await login(base, '小管', 'password2');
+        const bossTok = await login(base, '老板', 'password1');
+
+        // 普通管理员：看不了别人的备注
+        assert.equal((await api(base, `/api/admin/users/${pal.id}/notes`, { token: adminTok })).status, 403);
+
+        // 超管：看得到，而且拿到的是明文
+        const ok = await api(base, `/api/admin/users/${pal.id}/notes`, { token: bossTok });
+        assert.equal(ok.status, 200);
+        assert.equal(ok.body.nickname, '同学');
+        assert.equal(ok.body.remarks[adm.id], '外号小管');
+
+        // 审计留痕，但不许把备注内容写进去
+        const row = (await store.readAudit(50)).find((x) => x.event === 'notes_view');
+        assert.ok(row, '应当留一条 notes_view 审计');
+        assert.equal(row.target, '同学');
+        assert.equal(row.count, 1);
+        assert.ok(!JSON.stringify(row).includes('外号小管'), '审计里不能出现备注内容');
+
+        // 不存在的账号：404（而不是 500）
+        assert.equal((await api(base, '/api/admin/users/u_nobody/notes', { token: bossTok })).status, 404);
+    } finally {
+        await stop();
+    }
+});

@@ -12,6 +12,7 @@
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
+const crypto = require('node:crypto');
 const auth = require('./auth.js');
 
 const SESSION_TTL = 90 * 86400000;      // 会话 90 天
@@ -21,6 +22,20 @@ const MAX_MEMBERS = 50;
 const MAX_COURSES = 500;
 const MAX_GROUP_NAME = 20;
 const MAX_REMARK = 12;      // 自己给群友起的备注，最长 12 字
+
+/**
+ * 会话令牌**只以 sha256 落盘**。
+ *
+ * 明文令牌落盘，等于"拿到 sessions.json 就能冒充任意登录用户" —— 而令牌是
+ * Bearer 凭据，服务端只需要能比对，存哈希就够了。令牌本身在用户浏览器里，
+ * 换成哈希之后没有人需要重新登录。
+ */
+const SESSION_KEY_ALGO = 'sha256';
+
+/** 会话键：令牌的 sha256。明文令牌只在签发那一刻存在于内存与响应里 */
+function sessionKey(token) {
+    return crypto.createHash(SESSION_KEY_ALGO).update(String(token)).digest('hex');
+}
 
 // 同一 IP 在 24 小时内注册到这么多账号，就整簇标为「可疑」——
 // 只标注、不自动处置，留给发起人复核（同宿舍共用一个出口 IP 也可能误标）
@@ -453,6 +468,11 @@ function createStore(dataDir, options) {
         if (!cachedSessions.sessions || typeof cachedSessions.sessions !== 'object') {
             cachedSessions.sessions = {};
         }
+        // 老数据里存的是明文令牌：就地换成哈希（用户无感，不用重新登录）
+        const rekeyed = await upgradeSessionKeys();
+        if (rekeyed) {
+            console.log(`[store] 会话键已升级为 ${SESSION_KEY_ALGO}：${rekeyed} 条（用户无需重新登录）`);
+        }
     }
 
     async function readCachedSessions() {
@@ -595,6 +615,9 @@ function createStore(dataDir, options) {
      * @returns {{user:object, transferred:string[], disbanded:string[]}}
      */
     async function deleteUser(userId) {
+        // 超管不能删：删了就再没有人能做只有超管能做的事（要换人只能上服务器 --set-super）
+        const target = await getUser(userId);
+        if (target && target.super) throw fail(403, '超级管理员不能被删除');
         await fsp.mkdir(GROUPS, { recursive: true });
         const files = await fsp.readdir(GROUPS);
         const transferred = [];
@@ -718,6 +741,9 @@ function createStore(dataDir, options) {
             const db = await readJson(USERS, emptyUsers);
             const user = (db.users || []).find((u) => u.id === id);
             if (!user) throw fail(404, '账号不存在');
+            // 重置成随机临时密码 = 谁拿着它谁就能登录这个账号。
+            // 对超管来说那等于把"唯一且不可撤销"的位置让出去，所以一律拒绝。
+            if (user.super) throw fail(403, '不能重置超级管理员的密码');
             const password = auth.newTempPassword();
             const salt = auth.makeSalt();
             user.pwSalt = salt;
@@ -748,14 +774,43 @@ function createStore(dataDir, options) {
     /** lastSeen 多久才值得落一次盘。低于它就只在内存里推进，省掉整表重写 */
     const LASTSEEN_WRITE_MS = 60 * 1000;
 
+    /**
+     * 把会话表的键从「明文令牌」升级成「令牌的 sha256」。
+     *
+     * 为什么要有这一步：老版本的 sessions.json 里，键就是令牌原文 ——
+     * 拿到这个文件的人可以直接冒充任意登录用户。服务端只需要能比对，存哈希就够。
+     * 键换成哈希之后，**没有人需要重新登录**（浏览器里那个令牌照旧有效）。
+     *
+     * 为什么要 `keyed` 标记：令牌和 sha256 都是 64 位十六进制，光看形状分不出来。
+     * 不显式记一笔，第二次启动会把哈希再哈希一遍 —— 那等于把所有人踢下线。
+     */
+    async function upgradeSessionKeys() {
+        const db = await readCachedSessions();
+        if (db.keyed === SESSION_KEY_ALGO) return 0;
+        const next = {};
+        let n = 0;
+        Object.keys(db.sessions || {}).forEach((k) => {
+            next[sessionKey(k)] = db.sessions[k];
+            n += 1;
+        });
+        db.sessions = next;
+        db.keyed = SESSION_KEY_ALGO;
+        db.v = 2;
+        sessionsDirty = true;
+        await flushSessions('会话键升级');
+        return n;
+    }
+
     /** 新建会话：必须**立刻**落盘 —— 令牌刚发给用户，崩溃不能把它弄丢 */
     async function createSession(userId) {
         const token = auth.newToken();
         const db = await readCachedSessions();
-        db.sessions[token] = { userId, createdAt: now(), lastSeen: now() };
+        db.keyed = SESSION_KEY_ALGO;        // 新写的表已经是哈希键，别让下次启动再哈希一遍
+        db.v = 2;
+        db.sessions[sessionKey(token)] = { userId, createdAt: now(), lastSeen: now() };
         await withLock('sessions', () => writeCritical(SESSIONS, db));
         sessionsDirty = false;             // 刚写的就是最新状态
-        return token;
+        return token;                       // 明文令牌只回给这次调用，不落盘
     }
 
     /**
@@ -768,12 +823,13 @@ function createStore(dataDir, options) {
     async function resolveSession(token) {
         if (!token) return null;
         const db = await readCachedSessions();
-        const s = db.sessions[token];
+        const key = sessionKey(token);
+        const s = db.sessions[key];
         if (!s) return null;
 
         const t = now();
         if (t - s.lastSeen > SESSION_TTL) {
-            delete db.sessions[token];
+            delete db.sessions[key];
             await withLock('sessions', () => writeCritical(SESSIONS, db));
             return null;
         }
@@ -787,8 +843,9 @@ function createStore(dataDir, options) {
 
     async function revokeSession(token) {
         const db = await readCachedSessions();
-        if (!db.sessions[token]) return;
-        delete db.sessions[token];
+        const key = sessionKey(token);
+        if (!db.sessions[key]) return;
+        delete db.sessions[key];
         await withLock('sessions', () => writeCritical(SESSIONS, db));
     }
 
@@ -1618,8 +1675,9 @@ function createStore(dataDir, options) {
             const db = await readJson(USERS, emptyUsers);
             const target = (db.users || []).find((u) => u.id === id);
             if (!target) throw fail(404, '账号不存在');
-            db.users.forEach((u) => { if (u.super) delete u.super; });
+            db.users.forEach((u) => { if (u.super) delete u.super; });   // 旧的那位降为普通管理员
             target.super = true;
+            target.admin = true;      // 超管必然也是管理员，不然他连管理页都进不去
             target.updatedAt = now();
             await writeCritical(USERS, db);
             return { id: target.id, nickname: target.nickname };
@@ -1631,6 +1689,8 @@ function createStore(dataDir, options) {
             const db = await readJson(USERS, emptyUsers);
             const user = (db.users || []).find((u) => u.id === id);
             if (!user) throw fail(404, '账号不存在');
+            // super 全局唯一且不可撤销（含本人），只能整位移交 —— 见 transferSuper
+            if (user.super) throw fail(403, '超级管理员的权限不能改');
             if (admin) user.admin = true;
             else delete user.admin;
             user.updatedAt = now();
@@ -1743,6 +1803,7 @@ function createStore(dataDir, options) {
         countAdmins,
         countSupers,
         transferSuper,
+        sessionKey,
         setUserAdmin,
         resetUserPassword,
         deleteGroupAsAdmin,
@@ -1775,6 +1836,7 @@ function createStore(dataDir, options) {
 
 module.exports = {
     createStore,
+    sessionKey,
     fail,
     sanitizeNickname,
     validatePassword,

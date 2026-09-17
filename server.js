@@ -325,6 +325,10 @@ async function createServer(options = {}) {
         }
     }
 
+    // 超管数量：正常应该正好 1 个（迁移之前可能是 0）。不对就在横幅上喊一声，
+    // 不拒绝启动 —— 否则第一位超管都没设的时候服务就起不来了，那没法引导。
+    const superCount = await store.countSupers();
+
     if (!options.skipCleanup) store.cleanup().catch((e) => console.error('[cleanup]', e.message));
 
     // ------------------------------------------------------------ 注册验证码
@@ -426,6 +430,18 @@ async function createServer(options = {}) {
     async function requireAdmin(req) {
         const ctx = await requireUser(req);
         if (!ctx.user.admin) throw fail(403, '需要管理员权限');
+        return ctx;
+    }
+
+    /**
+     * 超管门禁。在 requireAdmin 之上再加一道：只认那唯一一位。
+     *
+     * 顺序照旧：先登录（401）→ 再管理员（403）→ 再超管（403），
+     * 别让没登录的人靠状态码差异探出「这个接口存在」。
+     */
+    async function requireSuper(req) {
+        const ctx = await requireAdmin(req);
+        if (!ctx.user.super) throw fail(403, '这事只有超级管理员能做');
         return ctx;
     }
 
@@ -753,6 +769,7 @@ async function createServer(options = {}) {
                 stats: {
                     userCount: users.length,
                     adminCount: users.filter((u) => u.admin).length,
+                    superCount: users.filter((u) => u.super).length,
                     groupCount: groups.length,
                     suspectCount: suspects.length,
                     dormantCount: users.filter((u) => u.dormant).length,
@@ -767,6 +784,13 @@ async function createServer(options = {}) {
             const body = await readBody(req, res);
             const on = !!body.admin;
             const targetId = m[1];
+
+            // 超管的权限谁都动不了（包括他自己）——"唯一"这条约束靠这里守住。
+            // 要换人只能走服务器上的 CLI：node server.js --set-super <昵称>
+            const target = await store.getUser(targetId);
+            if (target && target.super) {
+                throw fail(403, '超级管理员的权限不能改；要换人请在服务器上跑 --set-super');
+            }
 
             // 撤自己之前先确认还有别人能管 —— 否则这扇门就永久锁死了
             if (!on && targetId === user.id) {
@@ -788,6 +812,9 @@ async function createServer(options = {}) {
         ['DELETE', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})$/, async (req, res, m) => {
             const { user } = await requireAdmin(req);
             if (m[1] === user.id) throw fail(400, '不能删自己，换个管理员账号来操作');
+            // 删掉超管 = 这个站点再也没有人能恢复备注、也没有人能接手超管位
+            const doomed = await store.getUser(m[1]);
+            if (doomed && doomed.super) throw fail(403, '超级管理员不能被删除');
             const r = await store.deleteUser(m[1]);
             store.appendAudit({
                 event: 'admin_delete_user',
@@ -803,6 +830,13 @@ async function createServer(options = {}) {
         // 重置密码：没有「找回」这回事，只有换一个新的
         ['POST', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})\/reset-password$/, async (req, res, m) => {
             const { user: admin } = await requireAdmin(req);
+            // 谁都不能重置超管的密码（含超管自己）：拿到临时密码就等于接管那个账号，
+            // 而超管位是"唯一且不可撤销"的，那等于把超管位让出去。
+            // 超管要改自己的密码，走 /api/me/password（那里要旧密码）。
+            const victim = await store.getUser(m[1]);
+            if (victim && victim.super) {
+                throw fail(403, '不能重置超级管理员的密码；让他自己走「改密码」');
+            }
             const r = await store.resetUserPassword(m[1]);
             store.appendAudit({
                 event: 'admin_reset_password',
@@ -812,6 +846,28 @@ async function createServer(options = {}) {
             });
             // 明文只在这一个响应里出现，别的地方一概不留
             return { ok: true, nickname: r.nickname, password: r.password };
+        }],
+
+        // 超管读某个账号的私密备注明文。
+        //
+        // 服务器本来就有解密能力（钥匙在它的环境里），假装"谁也看不到"只会让人
+        // 以为这套东西是端到端加密。所以把这条能力**显式化 + 每次留审计**，
+        // 只有唯一那位超管能用。审计里只记条数，绝不记备注内容。
+        ['GET', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})\/notes$/, async (req, res, m) => {
+            const { user } = await requireSuper(req);
+            const target = await store.getUser(m[1]);
+            if (!target) throw fail(404, '账号不存在');
+            const remarks = target.remarks && typeof target.remarks === 'object' ? target.remarks : {};
+            // 这里 await：审计要先落盘再回内容。看别人的私密备注这种事，
+            // 不能出现"内容给出去了、记录还没来得及写"的窗口。
+            await store.appendAudit({
+                event: 'notes_view',
+                by: user.nickname,
+                target: target.nickname,
+                count: Object.keys(remarks).length,
+                ip: clientIp(req)
+            });
+            return { ok: true, userId: target.id, nickname: target.nickname, remarks };
         }],
 
         // 管理员给任意群换一个 8 位新码（旧码当场作废）。
@@ -1018,6 +1074,7 @@ async function createServer(options = {}) {
     server.store = store;
     server.port = port;
     server.encrypted = !!vault;
+    server.superCount = superCount;
     return server;
 }
 
@@ -1179,6 +1236,10 @@ async function main() {
         console.log('  ─────────────────────────────────────────────');
         console.log(`  本机访问   http://localhost:${server.port}`);
         console.log(`  存储加密   ${server.encrypted ? '已开启（TONGGE_ROOT_KEY）' : '⚠ 未开启（只应出现在测试里）'}`);
+        if (server.superCount !== 1) {
+            console.log(`  ⚠ 超级管理员有 ${server.superCount} 个（应为 1 个）：`);
+            console.log('      在服务器上执行  node server.js --set-super <昵称>  指定一位。');
+        }
         console.log('  正式服     对外由反向代理提供 HTTPS，站点形如 https://<主机>/tongge/');
         console.log('             这里不再打印网卡地址：正式服的入口是反代，不是本机端口。');
         if (suspects.length) {
