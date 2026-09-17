@@ -900,6 +900,10 @@ test('群组页：复制链接会把群名一起带上', async () => {
     assert.ok(copied, '应当复制了内容');
     assert.match(copied, /「信工饭饭」邀请你加入/, '分享文案里要带上群名');
     assert.match(copied, /邀请码：/, '要带上邀请码');
+    assert.ok(
+        copied.split('\n').some((l) => l.startsWith('（')),
+        '要带一句「这是干嘛的」说明，不然收到的人不知道点开做什么'
+    );
 
     const urlLine = copied.split('\n').find((l) => /^https?:\/\//.test(l));
     assert.ok(urlLine, '要带上链接');
