@@ -146,7 +146,9 @@ function createVault(key) {
         }
     }
 
-    return { seal, open, sealJson, openJson };
+    // KINDS / isSealed 也挂在实例上：调用方拿到的是一把"钥匙对象"，
+    // 不该再回头去 require 模块才能问"这条是不是密文"（store.js 就是这么用的）
+    return { seal, open, sealJson, openJson, isSealed, KINDS };
 }
 
 module.exports = {

@@ -20,12 +20,12 @@ const UID_2 = 'u_test0002';
 const v = vault.createVault(KEY_A);
 
 test('往返：文本原样解回', () => {
-    const blob = v.seal(vault.KINDS.REMARKS, UID_1, '苏胜超');
-    assert.equal(v.open(vault.KINDS.REMARKS, UID_1, blob), '苏胜超');
+    const blob = v.seal(vault.KINDS.REMARKS, UID_1, '小明');
+    assert.equal(v.open(vault.KINDS.REMARKS, UID_1, blob), '小明');
 });
 
 test('往返：JSON 原样解回（含中文与嵌套）', () => {
-    const value = { u_aaa: '苏胜超', u_bbb: '赵云浩', u_ccc: '余思齐' };
+    const value = { u_aaa: '小明', u_bbb: '小红', u_ccc: '小刚' };
     const blob = v.sealJson(vault.KINDS.REMARKS, UID_1, value);
     assert.deepEqual(v.openJson(vault.KINDS.REMARKS, UID_1, blob), value);
 });
@@ -108,7 +108,7 @@ test('密文格式不对时抛 BAD_BLOB，而不是当成明文读过去', () =>
 
 test('isSealed：只认完整的密文对象（迁移脚本靠它判重）', () => {
     assert.equal(vault.isSealed(v.seal(vault.KINDS.REMARKS, UID_1, 'x')), true);
-    assert.equal(vault.isSealed('苏胜超'), false);
+    assert.equal(vault.isSealed('小明'), false);
     assert.equal(vault.isSealed({}), false);
     assert.equal(vault.isSealed({ v: 1, iv: 'a', ct: 'b' }), false);
     assert.equal(vault.isSealed({ v: 1, iv: 'a', ct: 'b', tag: 'c' }), true);
@@ -148,6 +148,13 @@ test('createVault 接受 hex 字符串或 Buffer，长度不对都拒绝', () =>
     assert.equal(typeof vault.createVault(KEY_A).seal, 'function');
     assert.equal(typeof vault.createVault(Buffer.from(KEY_A, 'hex')).seal, 'function');
     assert.throws(() => vault.createVault(Buffer.alloc(16)), (e) => e.code === 'BAD_KEY');
+});
+
+test('实例自带 KINDS 与 isSealed（store 按实例用，不必回头 require 模块）', () => {
+    const one = vault.createVault(KEY_A);
+    assert.equal(one.KINDS.REMARKS, 'remarks');
+    assert.equal(one.isSealed(one.seal(one.KINDS.REMARKS, UID_1, 'x')), true);
+    assert.equal(one.isSealed('明文'), false);
 });
 
 test('openJson：内容不是 JSON 时抛 BAD_JSON，而不是静默返回 null', () => {

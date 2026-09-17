@@ -129,7 +129,10 @@ function validateCourses(raw) {
 
 // ---------------------------------------------------------------- Store
 
-function createStore(dataDir) {
+function createStore(dataDir, options) {
+    // vault 是可选的：不给就是"不加密"（老数据、现有测试都走这条路）。
+    // 正式服由 server.js 从 TONGGE_ROOT_KEY 构造后传进来。
+    const vault = (options && options.vault) || null;
     const USERS = path.join(dataDir, 'users.json');
     const SESSIONS = path.join(dataDir, 'sessions.json');
     const AUDIT = path.join(dataDir, 'audit.log');
@@ -156,7 +159,7 @@ function createStore(dataDir) {
      */
     async function writeJsonAtomic(file, data) {
         const tmp = `${file}.tmp`;
-        await fsp.writeFile(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+        await fsp.writeFile(tmp, JSON.stringify(encodeFor(file, data), null, 2), { encoding: 'utf8', mode: 0o600 });
         for (let i = 0; ; i++) {
             try {
                 await fsp.rename(tmp, file);
@@ -186,7 +189,8 @@ function createStore(dataDir) {
         await fsp.copyFile(file, `${file}.bak`).catch(() => {});
     }
 
-    async function readJson(file, fallback) {
+    /** 只读盘、只解析 —— 不碰加解密。启动自检与迁移要靠它看见"文件里真实的样子" */
+    async function readRaw(file, fallback) {
         let text;
         try {
             text = await fsp.readFile(file, 'utf8');
@@ -205,13 +209,18 @@ function createStore(dataDir) {
         }
     }
 
+    /** 业务读路径：读盘 + 解密 */
+    async function readJson(file, fallback) {
+        return decodeFor(file, await readRaw(file, fallback));
+    }
+
     /**
      * readJson + 损坏时先尝试从 .bak 恢复。
      * 给 users.json / sessions.json 用 —— 这两个丢掉就是「全员掉线」级别的事故。
      */
     async function readCritical(file, fallback) {
         try {
-            return JSON.parse(await fsp.readFile(file, 'utf8'));
+            return decodeFor(file, JSON.parse(await fsp.readFile(file, 'utf8')));
         } catch (e) {
             if (e.code === 'ENOENT') return fallback();
         }
@@ -221,7 +230,7 @@ function createStore(dataDir) {
             const data = JSON.parse(await fsp.readFile(`${file}.bak`, 'utf8'));
             console.error(`[store] ${file} 损坏，已从 .bak 恢复（损坏副本：${file}.corrupt-${stamp}）`);
             await writeJsonAtomic(file, data).catch(() => {});
-            return data;
+            return decodeFor(file, data);
         } catch (_) {
             console.error(`[store] ${file} 损坏且没有可用的 .bak，只能重建`);
             return fallback();
@@ -231,6 +240,163 @@ function createStore(dataDir) {
     const emptyUsers = () => ({ v: 1, users: [] });
     const emptySessions = () => ({ v: 1, sessions: {} });
     const groupFile = (code) => path.join(GROUPS, `${code}.json`);
+
+    // ---------------------------------------------------------- 存储加密
+    //
+    // 加解密**只发生在这里** —— 文件读写边界。磁盘上那四个字段是密文，
+    // 一进内存就是明文，和加密之前完全一样；所以路由、撞课比对、ICS 导出、
+    // 前端渲染、管理页统计都不需要知道加密的存在。
+    //
+    // 认的是**文件路径**而不是调用点：users.json 与 groups/*.json 各自的
+    // 读写都从这里过，将来新增一处写操作也不会漏。
+    //
+    // 没有 vault 时下面这些函数全都退化成"原样返回"。
+    // 设计与威胁模型见 docs/superpowers/specs/2026-09-17-storage-encryption-design.md
+
+    const inGroups = (file) => file.startsWith(GROUPS + path.sep);
+    const sealed = (x) => !!(vault && vault.isSealed(x));
+
+    /** 用户身上三个敏感字段还有几个是明文（给迁移与启动自检数数用） */
+    const plainUserFields = (u) =>
+        (typeof u.nickname === 'string' ? 1 : 0) +
+        (Array.isArray(u.courses) ? 1 : 0) +
+        (u.remarks && typeof u.remarks === 'object' && !sealed(u.remarks) ? 1 : 0);
+
+    /** 是明文就封上；已经是密文就原样留着 —— 幂等，迁移可以重复跑 */
+    function sealUser(u) {
+        const out = Object.assign({}, u);
+        if (typeof u.nickname === 'string') {
+            out.nickname = vault.seal(vault.KINDS.NICKNAME, u.id, u.nickname);
+        }
+        if (Array.isArray(u.courses)) {
+            out.courses = vault.sealJson(vault.KINDS.COURSE, u.id, u.courses);
+        }
+        if (u.remarks && typeof u.remarks === 'object' && !sealed(u.remarks)) {
+            out.remarks = vault.sealJson(vault.KINDS.REMARKS, u.id, u.remarks);
+        }
+        return out;
+    }
+
+    /** 解回明文。没加密过的老数据原样带过（由启动自检与迁移命令去发现） */
+    function unsealUser(u) {
+        const out = Object.assign({}, u);
+        if (sealed(u.nickname)) out.nickname = vault.open(vault.KINDS.NICKNAME, u.id, u.nickname);
+        if (sealed(u.courses)) out.courses = vault.openJson(vault.KINDS.COURSE, u.id, u.courses);
+        if (sealed(u.remarks)) out.remarks = vault.openJson(vault.KINDS.REMARKS, u.id, u.remarks);
+        return out;
+    }
+
+    /** 对外备注：AAD 绑 `<群号>:<uid>`，所以甲群的密文挪到乙群解不开 */
+    function mapSelfRemarks(g, fn) {
+        if (!g || !g.selfRemarks || typeof g.selfRemarks !== 'object') return g;
+        const next = {};
+        Object.keys(g.selfRemarks).forEach((uid) => { next[uid] = fn(uid, g.selfRemarks[uid]); });
+        return Object.assign({}, g, { selfRemarks: next });
+    }
+
+    const sealGroup = (g) => mapSelfRemarks(g, (uid, val) => (sealed(val)
+        ? val
+        : vault.seal(vault.KINDS.SELF_REMARK, `${g.code}:${uid}`, String(val))));
+
+    const unsealGroup = (g) => mapSelfRemarks(g, (uid, val) => (sealed(val)
+        ? vault.open(vault.KINDS.SELF_REMARK, `${g.code}:${uid}`, val)
+        : val));
+
+    /** 落盘前：把明文封上 */
+    function encodeFor(file, data) {
+        if (!vault || !data || typeof data !== 'object') return data;
+        if (file === USERS) {
+            if (!Array.isArray(data.users)) return data;
+            return Object.assign({}, data, { users: data.users.map(sealUser) });
+        }
+        if (inGroups(file)) return sealGroup(data);
+        return data;
+    }
+
+    /** 读盘后：把密文解开 */
+    function decodeFor(file, data) {
+        if (!vault || !data || typeof data !== 'object') return data;
+        if (file === USERS) {
+            if (!Array.isArray(data.users)) return data;
+            return Object.assign({}, data, { users: data.users.map(unsealUser) });
+        }
+        if (inGroups(file)) return unsealGroup(data);
+        return data;
+    }
+
+    /**
+     * 还有哪些敏感字段是明文。
+     *
+     * 两个用途：启动自检（发现明文就拒绝启动，避免"半明文半密文"悄悄上线）、
+     * 迁移命令（先看看有没有活要干）。
+     */
+    async function pendingPlaintext() {
+        const found = [];
+        const users = await readRaw(USERS, emptyUsers);
+        (users.users || []).forEach((u) => {
+            if (typeof u.nickname === 'string') found.push(`users.json:${u.id}:nickname`);
+            if (Array.isArray(u.courses)) found.push(`users.json:${u.id}:courses`);
+            if (u.remarks && typeof u.remarks === 'object' && !sealed(u.remarks)) {
+                found.push(`users.json:${u.id}:remarks`);
+            }
+        });
+        let names = [];
+        try { names = await fsp.readdir(GROUPS); } catch (_) { names = []; }
+        for (const name of names.filter((f) => f.endsWith('.json')).sort()) {
+            const g = await readRaw(path.join(GROUPS, name), () => null);
+            if (!g || !g.selfRemarks || typeof g.selfRemarks !== 'object') continue;
+            Object.keys(g.selfRemarks).forEach((uid) => {
+                if (!sealed(g.selfRemarks[uid])) found.push(`groups/${name}:${uid}:selfRemark`);
+            });
+        }
+        return found;
+    }
+
+    /**
+     * 就地把明文迁成密文。**幂等**：已经加密过的文件原样不动。
+     *
+     * 动手前把原文件抄一份 `<文件>.plaintext-<时间戳>` —— 那是回滚路径，
+     * 但它本身也是明文，确认备份可用后**必须删掉**（迁移说明里写了）。
+     */
+    async function migrateVault(stamp) {
+        if (!vault) throw fail(500, '没有配置根密钥，无法迁移');
+        const at = String(stamp || now());
+        const report = { backups: [], users: 0, groups: 0, fields: 0 };
+
+        const backupOf = async (file) => {
+            const dest = `${file}.plaintext-${at}`;
+            await fsp.copyFile(file, dest);
+            report.backups.push(path.basename(dest));
+        };
+
+        // ---- users.json
+        const rawUsers = await readRaw(USERS, () => null);
+        if (rawUsers && Array.isArray(rawUsers.users)) {
+            const dirty = rawUsers.users.filter((u) => plainUserFields(u) > 0);
+            if (dirty.length) {
+                await backupOf(USERS);
+                await withLock('users', () => writeCritical(USERS, rawUsers));
+                report.users = dirty.length;
+                report.fields += dirty.reduce((n, u) => n + plainUserFields(u), 0);
+            }
+        }
+
+        // ---- groups/*.json
+        let names = [];
+        try { names = await fsp.readdir(GROUPS); } catch (_) { names = []; }
+        for (const name of names.filter((f) => f.endsWith('.json')).sort()) {
+            const file = path.join(GROUPS, name);
+            const g = await readRaw(file, () => null);
+            if (!g || !g.selfRemarks || typeof g.selfRemarks !== 'object') continue;
+            const dirty = Object.keys(g.selfRemarks).filter((uid) => !sealed(g.selfRemarks[uid]));
+            if (!dirty.length) continue;
+            await backupOf(file);
+            await writeJsonAtomic(file, g);
+            report.groups += 1;
+            report.fields += dirty.length;
+        }
+        return report;
+    }
 
     // 会话表的常驻副本。
     //
@@ -1508,6 +1674,9 @@ function createStore(dataDir) {
     return {
         dataDir,
         init,
+        // 存储加密：启动自检与迁移命令用（没有 vault 时 pendingPlaintext 也能用）
+        pendingPlaintext,
+        migrateVault,
         cleanup,
         // 会话表的落盘（定时器与退出钩子用；读路径不经过它）
         flushSessions,
