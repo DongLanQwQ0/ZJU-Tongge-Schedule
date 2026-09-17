@@ -940,6 +940,22 @@ test('移除成员：确认按钮要按两次才真的移除', async () => {
     assert.ok(!detail.body.members.some((m) => m.id === mate.id), '第二下才真的移出');
 });
 
+test('分享：菜单里那一项会把站点地址复制出来（垫片里没有系统分享面板）', async () => {
+    const u = await user();
+    const a = await started(base, { token: u.token });
+
+    let copied = null;
+    globalThis.navigator.clipboard = {
+        writeText: (t) => { copied = t; return Promise.resolve(); }
+    };
+    a.click('#btn-share');
+    await tick(50);
+
+    assert.ok(copied, '应当复制出链接');
+    assert.ok(copied.startsWith(base), `复制的应当是本站地址：${copied}`);
+    assert.ok(!copied.includes('code='), '分享站点首页，不该把当前屏的邀请码带出去');
+});
+
 test('求 Star 的入口：顶栏第一次出现时是展开的', async () => {
     const u = await user();
     const a = await started(base, { token: u.token });

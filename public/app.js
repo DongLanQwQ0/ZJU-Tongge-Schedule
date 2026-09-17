@@ -2446,6 +2446,29 @@
     }
 
     /**
+     * 分享这个站点本身（不带邀请码，就是站点首页）。
+     *
+     * 手机上有 navigator.share，走系统分享面板直接发到微信/QQ；
+     * 桌面浏览器大多没有这个 API，就退回复制链接。
+     * 注意 share() 必须在点击手势里同步调用，前面不能 await 任何东西，否则会被拒。
+     */
+    async function shareSite() {
+        var url = new URL('./', document.baseURI).href;
+        var cfg = (window.DSH && window.DSH.config) || {};
+        var title = cfg.appName ? cfg.appName + ' · ' + cfg.tagline : '同格';
+        if (navigator.share) {
+            try {
+                await navigator.share({ title: title, text: title, url: url });
+                return;
+            } catch (e) {
+                // 用户自己点了取消也会走到这里，那就别再弹「已复制」打扰他
+                if (e && e.name === 'AbortError') return;
+            }
+        }
+        copyText(url, '链接已复制，发给同学就行');
+    }
+
+    /**
      * 顶栏「更多」菜单：管理 / 主题 / 退出都收在这里。
      *
      * 选完一项、点别处、按 Esc 都收起 —— 手机上留个浮层在那儿会挡住下面的内容。
@@ -2488,6 +2511,8 @@
         });
         // 菜单里任何一项点下去都收起（主题、管理、退出都一样）
         menu.addEventListener('click', function () { setOpen(false); });
+        // 分享：分享的是站点首页，不是当前这一屏（当前屏的地址里可能带邀请码）
+        $('#btn-share').addEventListener('click', function () { shareSite(); });
         document.addEventListener('click', function (e) {
             if (menu.hidden) return;
             var t = e.target;
