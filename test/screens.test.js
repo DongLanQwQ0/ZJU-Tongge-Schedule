@@ -881,6 +881,31 @@ test('群组页：邀请码、二维码、周次胶囊都渲染出来', async ()
     assert.equal(a.el('#btn-group-delete').hidden, false, '群主看得见解散');
 });
 
+test('群组页：复制链接会把群名一起带上', async () => {
+    const owner = await user();
+    await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '信工饭饭' } });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+
+    // 垫片里没有 clipboard，挂一个假的把复制内容截下来
+    let copied = null;
+    globalThis.navigator.clipboard = {
+        writeText: (t) => { copied = t; return Promise.resolve(); }
+    };
+    a.click('#btn-copy-link');
+    await tick(50);
+
+    assert.ok(copied, '应当复制了内容');
+    assert.match(copied, /「信工饭饭」邀请你加入/, '分享文案里要带上群名');
+    assert.match(copied, /邀请码：/, '要带上邀请码');
+
+    const urlLine = copied.split('\n').find((l) => /^https?:\/\//.test(l));
+    assert.ok(urlLine, '要带上链接');
+    assert.ok(!urlLine.includes('name='), '群名只进文案，不进 URL（否则二维码会变密）');
+});
+
 test('邀请链接管理页：能进、能看到列表、非群主进不去', async () => {
     const owner = await user(true);
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '邀请管理群' } });

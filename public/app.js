@@ -1780,14 +1780,21 @@
         return list[Math.floor(Math.random() * list.length)];
     }
 
-    /** 复制给同学的整段话：链接 + 口令 + 邀请码 + 一句怎么用 */
-    function shareMessage(url, code) {
-        return [
-            pickOne(SHARE_HEADS),
-            url,
-            '邀请码：' + code,
-            pickOne(SHARE_TAILS)
-        ].join('\n');
+    /**
+     * 复制给同学的整段话：群名 + 链接 + 邀请码 + 一句怎么用。
+     *
+     * 群名单独占一行：同一个人可能在好几个群里，收到的人得先知道这是哪个群，
+     * 再去点链接。群名理论上有空的时候，整行省掉，不留空行。
+     *
+     * 群名只进文案、**不进 URL** —— 群名里有中文甚至 emoji，塞进 query 会膨胀成
+     * 一长串百分号编码，二维码会明显变密、不好扫。
+     */
+    function shareMessage(url, code, groupName) {
+        var lines = [pickOne(SHARE_HEADS)];
+        var name = String(groupName || '').trim();
+        if (name) lines.push('「' + name + '」邀请你加入');
+        lines.push(url, '邀请码：' + code, pickOne(SHARE_TAILS));
+        return lines.join('\n');
     }
 
     function copyText(text, okMsg) {
@@ -1816,8 +1823,9 @@
         $('#btn-copy-link').addEventListener('click', function () {
             var disp = currentDisplayCode();
             if (!disp) return;
+            var groupName = (state.group && state.group.name) || '';
             joinUrl(disp.code).then(function (u) {
-                copyText(shareMessage(u, disp.code), '分享文案已复制，直接发群里就行');
+                copyText(shareMessage(u, disp.code, groupName), '分享文案已复制，直接发群里就行');
             });
         });
         $('#btn-zoom-qr').addEventListener('click', zoomQr);
