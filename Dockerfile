@@ -25,6 +25,14 @@ ENV LANG=C.UTF-8 \
 
 WORKDIR /app
 
+# 构建号（短提交哈希）：只用于页脚那行版本号，方便一眼看出线上是哪一版。
+# 镜像里没有 .git（.dockerignore 排除了它，那是构建上下文的第二道闸），
+# 所以只能构建时从外面传进来：
+#   TONGGE_BUILD=$(git rev-parse --short HEAD) docker compose build
+# 不传就是空串，页脚只显示 v1.0.0 —— 一个装饰性的东西不该让构建失败。
+ARG TONGGE_BUILD=
+ENV TONGGE_BUILD=$TONGGE_BUILD
+
 # 先 COPY 代码，再 COPY 数据 —— 代码改了不必让数据层缓存失效
 COPY server.js package.json ./
 COPY shared/ ./shared/

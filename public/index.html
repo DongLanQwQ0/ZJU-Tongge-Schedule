@@ -403,6 +403,11 @@
         <div class="foot-sub"><s>Coauthor: 𝗛 𝗭 𝗥</s> <b class="foot-copig">CoPig：𝗛 ㊗️ 𝗥</b></div>
         <div class="foot-sub">鸣谢 𝗛 𝗭 𝗥 的 🥔 服务器</div>
         <div class="foot-sub"><a class="foot-star" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule" target="_blank" rel="noopener noreferrer">⭐ 觉得还行？去 GitHub 点个 Star 🥺</a></div>
+        <!-- 版本号（灰字）：内容由 app.js 从 /api/meta 取，服务端读的是
+             package.json 与构建时的提交号 —— 所以这行字说的是「此刻在跑的那一版」，
+             不是页面里写死的字符串。取不到就一直空着（默认 hidden），
+             免得留一行什么都没有的灰字。 -->
+        <div class="foot-sub foot-ver" id="foot-ver" hidden></div>
     </div>
     <span class="foot-slot"><img class="foot-mascot" id="foot-mascot-right" alt="" hidden></span>
 </footer>

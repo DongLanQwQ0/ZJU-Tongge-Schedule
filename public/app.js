@@ -2328,6 +2328,37 @@
         initMascot();
     }
 
+    // ------------------------------------------------------------ 页脚版本号
+
+    /**
+     * 页脚最底下那行灰字：v<版本> · <构建号>（例如 v1.0.0 · 62c0a05）。
+     *
+     * 从服务端拿（/api/meta），不写死在 HTML 里 —— 写死的那串是「页面生成时的
+     * 版本」，页脚还在浏览器缓存里、或者部署时漏了重建镜像，它照样显示新号，
+     * 那这行字就白加了。服务端读的是它自己那份 package.json 与提交号，
+     * 所以显示的必然是此刻真正在跑的那一版。
+     *
+     * 拿不到（离线、接口挂了、服务端太老没有这两个字段）就不显示：
+     * 留一行空的灰字看着更像出了 bug。
+     */
+    async function initVersion() {
+        var el = $('#foot-ver');
+        if (!el) return;
+
+        var meta;
+        try { meta = await API.meta(); } catch (e) { return; }
+
+        var parts = [];
+        if (meta && meta.version) parts.push('v' + meta.version);
+        if (meta && meta.build) parts.push(meta.build);
+        if (!parts.length) return;
+
+        var text = parts.join(' · ');
+        el.textContent = text;
+        el.title = '服务端当前版本：' + text;
+        el.hidden = false;
+    }
+
     // ------------------------------------------------------------ 页脚吉祥物
 
     /* 左右各一只：左边土豆，右边粉猪，凑成一对。
@@ -2553,6 +2584,8 @@
         if (code) state.pendingCode = code;
 
         maybeShowBeta();
+        // 不 await：页脚那行版本号晚一点出现没人会注意，别让它拖住首页
+        initVersion().catch(function () {});
         await restoreSession();
     }
 

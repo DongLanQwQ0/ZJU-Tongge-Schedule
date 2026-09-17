@@ -100,7 +100,8 @@ sudo chmod 600 /etc/tongge/key.env
 **第 1 步：起服务**
 
 ```bash
-docker compose up -d --build     # 构建 + 启动
+# TONGGE_BUILD 是页脚版本号里那段提交号，带上它才好认「线上是哪一版」（可不带）
+TONGGE_BUILD=$(git rev-parse --short HEAD) docker compose up -d --build
 docker compose logs -f tongge    # 看启动横幅
 docker compose down              # 停服务（数据在卷里，不会丢）
 ```
@@ -349,7 +350,8 @@ node server.js --port 3001  # 换端口
 #### 你要做的：三条命令
 
 ```bash
-docker compose up -d --build     # 构建 + 启动
+# 把这次的提交号带进镜像（页脚那行灰字就靠它；不带也能跑，只是页脚少一段）
+TONGGE_BUILD=$(git rev-parse --short HEAD) docker compose up -d --build
 docker compose logs -f tongge    # 看启动横幅
 docker compose down              # 停服务（卷保留，数据不丢）
 ```
@@ -370,27 +372,43 @@ docker run -d --name tongge \
 > 想在还没配反代的机器上直接打开看，把端口换成 `-p 3000:3000`（compose 里同理），
 > 再访问 `http://<主机>:3000`。**公网机器上别这么干**——那是明文直连。
 
-#### 只想让账号和群组过去，不带任何活跃登录态
+#### 页脚那行版本号是哪来的
 
-`data/` 里的 `sessions.json` 存的是**明文会话令牌**。要交给别人构建、或者想让镜像干净一点，
-可以把它剔掉（代价：所有人需要重新登录一次）：
+页脚最底下有一行灰字，形如 `v1.0.0 · 62c0a05`：
 
-```bash
-docker build -t tongge:1.0 --build-arg INCLUDE_SESSIONS=false .
-```
+- 前半段 `v<版本>` 来自 `package.json` 的 `version` —— **版本号只有这一处**，
+  要发新版就改它（`docker:build` 里的镜像 tag `tongge:1.0` 是另一回事，别混）。
+- 后半段是**构建时的提交号**。镜像里没有 `.git`，所以只能构建时传进去：
 
-用 compose 的话，把 `docker-compose.yml` 里的 `INCLUDE_SESSIONS: "true"` 改成 `"false"`。
+  ```bash
+  TONGGE_BUILD=$(git rev-parse --short HEAD) docker compose build
+  ```
+
+  不传也不报错，页脚就只显示 `v1.0.0`。本地 `node server.js` 会直接读仓库的
+  `.git`，不用传这个变量。
+
+这行字是**从服务端读的**（`/api/meta` 里的 `version` / `build`），不是页面里写死的
+字符串——所以它永远说的是"此刻真正在跑的那一版"。排查部署时拿它和服务器上的
+`git rev-parse --short HEAD` 对一下：对不上就是漏了 `git pull` 或漏了 `docker compose build`。
+
+> 代价：这个免鉴权接口对外报告了精确版本。这项目零第三方依赖、也没有能被版本号
+> 命中的已知漏洞，而它必须出现在**登录页**的页脚上，绕不开公开接口——认了。
 
 #### 启动横幅会说什么
 
 ```
   同格 · 与一个或一群有趣的人同行
+  版本       v1.0.0 · 62c0a05
   发起人     DongLanQwQ
   ─────────────────────────────────────────────
   本机访问   http://localhost:3000
+  存储加密   已开启（TONGGE_ROOT_KEY）
+  限流依据   真实 IP（可信网段 9 个，默认：本机 + 容器网段）
   正式服     对外由反向代理提供 HTTPS，站点形如 https://<主机>/tongge/
              这里不再打印网卡地址：正式服的入口是反代，不是本机端口。
 ```
+
+（没传 `TONGGE_BUILD` 时，`版本` 那行只有 `v1.0.0`。）
 
 以前它会把探测到的局域网地址（`http://10.x.x.x:3000`）打出来，好让你发给同学；
 现在正式服的入口是反代，那段网卡探测已经删掉了。
@@ -429,6 +447,10 @@ docker run --rm -v tongge-data:/data -v "$PWD/data:/seed" alpine \
 判断依据是 `users.json` / `sessions.json` 是否存在，或 `groups/` 里有没有文件——
 不是「目录是否为空」，免得被 `lost+found` 之类的东西误判。
 
+> 早期那个 `--build-arg INCLUDE_SESSIONS=false` 已经**取消**了：镜像里根本不带
+> `data/`，没有会话令牌可以被它剔掉。想只搬账号和群组，用上面的显式导入，
+> 只拷贝要的那几个文件（`sessions.json` 不拷 = 所有人重新登录一次）。
+
 ---
 
 ### 存储加密与迁移
@@ -464,7 +486,8 @@ docker compose stop
 # 4. 先构建新镜像 —— 也不能省。`docker compose run` 用的是**镜像里**的代码：
 #    不先构建，跑的还是旧代码，它不认识 --migrate-vault，会当成普通启动把
 #    服务跑起来（表现为"卡住不动，只打印横幅"）
-docker compose build
+#    带上提交号是为了页脚版本号能对得上这次部署（不带也行）
+TONGGE_BUILD=$(git rev-parse --short HEAD) docker compose build
 
 # 5. 迁移（CLI 模式，不启 HTTP；缺根密钥会直接报错）
 docker compose run --rm tongge node server.js --migrate-vault --super DongLan
@@ -724,12 +747,13 @@ node server.js --revoke-admin 你的昵称   # 取消管理员
 npm test        # node --test，零依赖
 ```
 
-实测：**245 项全部通过**（Node 24）。覆盖 ICS 解析、地点分级、教学周、重合统计、
+实测：**259 项全部通过**（Node 24）。覆盖 ICS 解析、地点分级、教学周、重合统计、
 导出视图、账号/会话/群组存储、注册验证码（出题/画图/过期/一次性核销）、管理页、
 前端接线与六个屏幕的 DOM 全量扫描，以及一次完整的 HTTP 端到端旅程和一组安全回归
 （穿越矩阵、限流、415/413、响应头）、存储加密（AAD 跨用户/跨群/跨用途必须失败、
 迁移幂等与回滚、四种"拒绝启动"）、会话令牌哈希化（含老数据升级不踢人下线）、
-超管守卫（撤不掉/删不掉/重置不了）、真实来源 IP（反代后分桶 + 伪造头必须无视）。
+超管守卫（撤不掉/删不掉/重置不了）、真实来源 IP（反代后分桶 + 伪造头必须无视）、
+页脚版本号（版本只认 package.json，提交号在假仓库里验松散 ref / packed-refs / 分离头指针）。
 
 > 如果 `npm test` 报「找不到测试文件」（旧版 Node 不会展开 `--test` 里的通配符），
 > 直接写全：`node --test test/*.test.js`。
@@ -751,6 +775,7 @@ shared/            纯函数层：ics / periods / weeks / compare（前后端与
 shared/auth.js     密码哈希与会话令牌生成（仅服务端）
 shared/captcha.js  注册验证码：个位数四则运算 + 手写 PNG 编码（仅服务端，零依赖）
 shared/vault.js    存储加密：AES-256-GCM + AAD 域分离 + 根密钥解析（仅服务端）
+shared/build.js    版本号与构建号（读 package.json 与 .git，页脚那行灰字用它；仅服务端）
 shared/store.js    原子写（带重试）+ 写队列 + 校验 + .bak 备份 + 读写边界上的加解密
 public/            前端：index.html / app.js / style.css / api.js
 public/lib/        本地内置的 html2canvas 与二维码生成器（不依赖 CDN）

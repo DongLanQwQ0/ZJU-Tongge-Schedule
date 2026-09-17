@@ -66,6 +66,16 @@ test('GET /api/meta 无需登录，且只回健康信息', async () => {
     assert.equal(r.body.port, undefined);
 });
 
+test('页脚版本号：/api/meta 给的版本号就是 package.json 那一份', async () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const r = await api('/api/meta');
+    assert.equal(r.body.version, pkg.version, '服务端报的版本号必须等于 package.json，别处不许再抄一份');
+    // 构建号：本地有 .git 时是 7 位短哈希；没有（比如打成压缩包部署）就是空串。
+    // 两种都合法 —— 页脚那行字少一段而已，服务不能因此起不来。
+    assert.equal(typeof r.body.build, 'string');
+    assert.match(r.body.build, /^([0-9a-f]{7})?$/, `构建号形状不对：${r.body.build}`);
+});
+
 test('未知接口返回 404，非法方法返回 405', async () => {
     assert.equal((await api('/api/nope')).status, 404);
 });

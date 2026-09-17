@@ -110,6 +110,10 @@
         // 注册验证码：服务端出题（一道算术题画成 PNG），返回 { enabled, id, image }
         captcha: function () { return request('api/captcha'); },
 
+        // 服务端元信息：页脚那行版本号（version / build）就取自这里。
+        // 免鉴权，所以登录页的页脚也能显示。
+        meta: function () { return request('api/meta'); },
+
         register: function (nickname, password, box) {
             var body = { nickname: nickname, password: password };
             if (box) { body.captchaId = box.id; body.captchaAnswer = box.answer; }

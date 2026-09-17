@@ -11,6 +11,12 @@ services:
   tongge:
     build:
       context: .
+      # 构建号（短提交哈希）：页脚那行灰字版本号里 `·` 后面那段，
+      # 用来一眼确认线上跑的是哪一版。推荐这样构建：
+      #   TONGGE_BUILD=$(git rev-parse --short HEAD) docker compose up -d --build
+      # 不传也行 —— 页脚只显示 v1.0.0，服务照常。
+      args:
+        TONGGE_BUILD: ${TONGGE_BUILD:-}
     image: tongge:1.0
     container_name: tongge
     restart: unless-stopped

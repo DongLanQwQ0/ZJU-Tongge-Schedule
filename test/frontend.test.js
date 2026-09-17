@@ -156,6 +156,23 @@ test('页脚里的 CoPig 那行确实在页面上', () => {
     assert.match(html, /鸣谢/);
 });
 
+test('页脚有一行灰字版本号，且是从服务端拿的（不写死在页面里）', () => {
+    // 坑留在页脚最底下，默认 hidden：取不到版本就空着，
+    // 别留一行「什么都没有」的灰字在那儿
+    assert.match(html, /<div class="foot-sub foot-ver" id="foot-ver" hidden><\/div>/);
+    // 内容由 app.js 从 /api/meta 填进去。写死在 HTML 里就只能靠人记得改，
+    // 而这一行的意义恰恰是「页面上显示的 = 此刻真正在跑的那一版」
+    assert.match(app, /\$\('#foot-ver'\)/);
+    assert.match(app, /API\.meta\(\)/);
+    assert.match(api, /meta: function \(\)/);
+
+    // 灰字：比页脚其它几行更淡、更小
+    const rule = /\.foot-sub\.foot-ver\s*\{([^}]*)\}/.exec(css);
+    assert.ok(rule, 'style.css 里得有 .foot-sub.foot-ver 这条规则');
+    assert.match(rule[1], /color:\s*var\(--text-2\)/);
+    assert.match(rule[1], /opacity:\s*\.\d+/);
+});
+
 test('顶栏和页脚都有去 GitHub 点 Star 的入口', () => {
     const REPO = 'https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule';
     const links = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);

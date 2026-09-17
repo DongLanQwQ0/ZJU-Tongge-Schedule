@@ -1180,3 +1180,16 @@ test('页脚吉祥物：左右各挂一张，且没有报错', async () => {
         if (el.src) assert.match(el.src, /^img\/mascot\/[a-z-]+\.gif$/);
     }
 });
+
+test('页脚版本号：服务端给什么就显示什么（连登录页都看得到）', async () => {
+    const pkg = JSON.parse(read('package.json'));
+    // 特意不登录：这行字在登录页也该有，否则「线上是哪一版」只在登录后能看到
+    const a = await started(base);
+    await tick(80);
+
+    const el = a.el('#foot-ver');
+    assert.ok(el, '页脚要留出 #foot-ver 这个坑');
+    assert.equal(el.hidden, false, '拿到版本号之后要显示出来');
+    // 版本号来自服务端读的那份 package.json —— 页面里写死的那个字符串不算数
+    assert.match(el.textContent, new RegExp('^v' + pkg.version.replace(/\./g, '\\.')));
+});

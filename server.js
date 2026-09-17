@@ -21,6 +21,7 @@ const net = require('node:net');
 const crypto = require('node:crypto');
 const captcha = require('./shared/captcha.js');
 const vaultLib = require('./shared/vault.js');
+const buildInfo = require('./shared/build.js');
 const { createStore, fail, validateCode } = require('./shared/store.js');
 const config = require('./shared/config.js');
 
@@ -398,6 +399,11 @@ async function createServer(options = {}) {
     const port = options.port || Number(process.env.PORT) || 3000;
     const vault = resolveVault(options);
 
+    // 页脚那行版本号的两个字段，在这里算一次（每次请求都读盘没必要）。
+    // 版本号来自 package.json，构建号来自 TONGGE_BUILD 或本地 .git —— 见 shared/build.js。
+    const version = buildInfo.readVersion(__dirname);
+    const buildId = buildInfo.resolveBuildId();
+
     // 限流要按"真实来源"分桶：只有直连方可信时才采信 X-Forwarded-For。
     // 这个局部 const 会遮蔽模块级的解析函数（同名只是巧合，见上面的说明），
     // 于是本函数里所有路由都自动用上真实 IP —— 十几处调用点一个都不用改。
@@ -560,7 +566,18 @@ async function createServer(options = {}) {
         ['GET', /^\/api\/meta$/, async () => ({
             ok: true,
             app: config.appName,
-            tagline: config.tagline
+            tagline: config.tagline,
+            // 页脚那行灰字就取自这两个字段。
+            //
+            // 为什么从服务端给、不写死在 index.html 里：写死的那串是「页面生成时的
+            // 版本」，页脚带 max-age 缓存、或者部署时漏了重建镜像，它照样显示新号。
+            // 从服务端读才有可能看出「线上到底在跑哪一版」——那正是这行字的意义。
+            //
+            // 免鉴权接口里带版本号与提交号，等于对外报告精确版本。这里认了：
+            // 这项目没有第三方依赖、也没有能被版本号命中的已知漏洞，
+            // 而它必须出现在登录页的页脚上，绕不开公开接口。
+            version: version,
+            build: buildId
         })],
 
         // 注册验证码：一道个位数加减法，服务端画成 PNG 发下来。
@@ -1183,6 +1200,9 @@ async function createServer(options = {}) {
     server.encrypted = !!vault;
     server.superCount = superCount;
     server.trustedProxies = trusted;
+    // 版本号 / 构建号：横幅上印一份，页脚那行字也取自这里（见 /api/meta）
+    server.version = version;
+    server.build = buildId;
     return server;
 }
 
@@ -1340,6 +1360,8 @@ async function main() {
     server.listen(server.port, '0.0.0.0', () => {
         console.log('');
         console.log(`  ${config.appName} · ${config.tagline}`);
+        // 版本号印在横幅上：出事时第一眼要能说出「现在跑的是哪一版」
+        console.log(`  版本       v${server.version || '未知'}${server.build ? ' · ' + server.build : ''}`);
         console.log(`  发起人     ${config.owner}`);
         console.log('  ─────────────────────────────────────────────');
         console.log(`  本机访问   http://localhost:${server.port}`);
