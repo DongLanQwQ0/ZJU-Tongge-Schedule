@@ -492,7 +492,8 @@ docker run --rm -v tongge-data:/data -v "$PWD/data:/seed" alpine \
 docker run --rm -v tongge-data:/data -v "$PWD:/backup" alpine \
   tar czf /backup/tongge-$(date +%Y%m%d-%H%M).tar.gz -C /data .
 
-# 1. 根密钥（首次才需要；已经有 /etc/tongge/key.env 就跳过）
+# 1. 根密钥（首次才需要；已经有 /etc/tongge/key.env 就**跳过** ——
+#    重新生成一把会让已经加密的数据全部读不出来）
 #    ⚠️ 必须先做这一步：compose 里的 env_file 指向它，文件不存在时
 #    连 docker compose stop 都会因为"env file not found"直接报错
 # 服务器上一般没装 node（应用跑在容器里），所以用容器生成一把
