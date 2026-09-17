@@ -118,13 +118,17 @@ test('没有 vault 时保持老行为：文件里就是明文', async () => {
     assert.equal(rawA.remarks[b.id], '外号小红');
 });
 
-test('换一把钥匙读同一个目录：解密失败（钥匙必须保管好）', async () => {
+test('换一把钥匙读同一个目录：启动时就失败（钥匙必须保管好）', async () => {
     const dir = newDir();
     const store = await openStore(dir, KEY_A);
     await seed(store);
 
-    const other = await openStore(dir, KEY_B);
-    await assert.rejects(() => other.readUsers(), (e) => e.code === 'BAD_TAG');
+    // 失败发生在 init（读到第一条密文就解不开）—— 这正是 fail-fast 想要的时机
+    await assert.rejects(() => openStore(dir, KEY_B), (e) => e.code === 'BAD_TAG');
+
+    // 而且不许把好文件当"损坏"改名重建
+    assert.ok(fs.existsSync(usersFile(dir)));
+    assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('.corrupt-')), []);
 });
 
 test('AAD 绑群号：把甲群的对外备注密文挪到乙群，解不开', async () => {

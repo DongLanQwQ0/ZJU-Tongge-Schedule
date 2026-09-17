@@ -496,7 +496,7 @@ let base;
 before(async () => {
     globalThis.__realFetch = globalThis.fetch;
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-screens-'));
-    server = await createServer({ captcha: false,
+    server = await createServer({ vault: false, captcha: false,
         dataDir, port: 0, skipCleanup: true,
         limits: {
             registerBurst: { windowMs: 60000, max: 1000, message: 'x' },

@@ -15,7 +15,7 @@ let dataDir;
 
 before(async () => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-srv-'));
-    server = await createServer({ captcha: false,
+    server = await createServer({ vault: false, captcha: false,
         dataDir, port: 0, skipCleanup: true,
         // 这里测的是功能本身，不是限流（限流另有专门用例），把阈值放开
         limits: {
@@ -345,7 +345,7 @@ test('群组设置：非法值、空 patch、已废弃字段都被挡', async ()
 test('IP 限流：拿脚本刷加入接口会被挡住', async () => {
     // 单独起一个服务并把阈值调小（默认值宽得多，正常人碰不到）
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-rate-'));
-    const s = await createServer({ captcha: false,
+    const s = await createServer({ vault: false, captcha: false,
         dataDir: dir, port: 0, skipCleanup: true,
         limits: { join: { windowMs: 60000, max: 3, message: '试得太频繁了，等一分钟再试' } }
     });
@@ -503,7 +503,7 @@ test('每个响应都带安全头', async () => {
 
 test('内部错误不回传 errno 或绝对路径', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-leak-'));
-    const s = await createServer({ captcha: false, dataDir: dir, port: 0, skipCleanup: true });
+    const s = await createServer({ vault: false, captcha: false, dataDir: dir, port: 0, skipCleanup: true });
     await new Promise((r) => s.listen(0, '127.0.0.1', r));
     const ra = `http://127.0.0.1:${s.address().port}`;
     try {
@@ -528,7 +528,7 @@ test('内部错误不回传 errno 或绝对路径', async () => {
 
 test('改密码：旧密码连错会被限速，成功后旧会话全失效', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-pw-'));
-    const s = await createServer({ captcha: false,
+    const s = await createServer({ vault: false, captcha: false,
         dataDir: dir, port: 0, skipCleanup: true,
         limits: { loginFail: { windowMs: 600000, max: 3, message: '原密码错误次数太多' } }
     });
@@ -792,7 +792,7 @@ test('换群码：换完之后发新链接、作废旧码，整套仍然顺', as
 /** 起一个干净的实例 + 一个群主 + 一个路人 */
 async function inviteSetup() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-inv-'));
-    const s = await createServer({ captcha: false,
+    const s = await createServer({ vault: false, captcha: false,
         dataDir: dir, port: 0, skipCleanup: true,
         limits: { join: { windowMs: 60000, max: 1000, message: 'x' } }
     });

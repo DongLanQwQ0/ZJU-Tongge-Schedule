@@ -218,23 +218,38 @@ function createStore(dataDir, options) {
      * readJson + 损坏时先尝试从 .bak 恢复。
      * 给 users.json / sessions.json 用 —— 这两个丢掉就是「全员掉线」级别的事故。
      */
+    /**
+     * readRaw + 损坏时先尝试从 .bak 恢复。
+     * 给 users.json / sessions.json 用 —— 这两个丢掉就是「全员掉线」级别的事故。
+     *
+     * 注意：**只有"读不动 / 解析不了"才算损坏**。解密失败（钥匙不对、数据被改过）
+     * 必须原样抛出去 —— 那不是文件坏了，而是我们拿着错钥匙。要是把它当损坏处理，
+     * 就会把人家的好文件改名成 .corrupt-* 再"重建"一张空表 —— 那等于把数据删了。
+     */
     async function readCritical(file, fallback) {
+        let parsed = null;
+        let readable = false;
         try {
-            return decodeFor(file, JSON.parse(await fsp.readFile(file, 'utf8')));
+            parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
+            readable = true;
         } catch (e) {
             if (e.code === 'ENOENT') return fallback();
         }
+        if (readable) return decodeFor(file, parsed);      // 解密失败在这里抛出
+
         const stamp = now();
         try { await fsp.rename(file, `${file}.corrupt-${stamp}`); } catch (_) { /* 保底继续 */ }
+        let bak = null;
         try {
-            const data = JSON.parse(await fsp.readFile(`${file}.bak`, 'utf8'));
-            console.error(`[store] ${file} 损坏，已从 .bak 恢复（损坏副本：${file}.corrupt-${stamp}）`);
-            await writeJsonAtomic(file, data).catch(() => {});
-            return decodeFor(file, data);
+            bak = JSON.parse(await fsp.readFile(`${file}.bak`, 'utf8'));
         } catch (_) {
             console.error(`[store] ${file} 损坏且没有可用的 .bak，只能重建`);
             return fallback();
         }
+        console.error(`[store] ${file} 损坏，已从 .bak 恢复（损坏副本：${file}.corrupt-${stamp}）`);
+        const decoded = decodeFor(file, bak);              // 同上：钥匙不对就抛出去
+        await writeJsonAtomic(file, bak).catch(() => {});
+        return decoded;
     }
 
     const emptyUsers = () => ({ v: 1, users: [] });
@@ -477,6 +492,7 @@ function createStore(dataDir, options) {
             courseCount: (u.courses || []).length,
             remarks: (u.remarks && typeof u.remarks === 'object') ? u.remarks : {},
             admin: !!u.admin,
+            super: !!u.super,
             updatedAt: u.updatedAt,
             createdAt: u.createdAt
         };
@@ -1573,6 +1589,7 @@ function createStore(dataDir, options) {
                 // 待清理：没传过课表，而且很久没露面
                 dormant: courseCount === 0 && idleDays >= DORMANT_DAYS,
                 admin: !!u.admin,
+                super: !!u.super,
                 suspect: !!u.suspect,
                 suspectReason: u.suspectReason || ''
             };
@@ -1582,6 +1599,31 @@ function createStore(dataDir, options) {
     async function countAdmins() {
         const users = await readUsers();
         return users.filter((u) => u.admin).length;
+    }
+
+    /** 当前有几名超级管理员。正常应为 1（迁移前可能是 0） */
+    async function countSupers() {
+        const users = await readUsers();
+        return users.filter((u) => u.super).length;
+    }
+
+    /**
+     * 指定唯一的超级管理员：先摘掉旧的，再给新的戴上。
+     *
+     * 与 setUserAdmin 分开，是因为 super 有"全局唯一"这条约束：
+     * 谁都不能撤销它（含本人），只能整位移交 —— 所以只有"换人"这一种操作。
+     */
+    async function transferSuper(id) {
+        return withLock('users', async () => {
+            const db = await readJson(USERS, emptyUsers);
+            const target = (db.users || []).find((u) => u.id === id);
+            if (!target) throw fail(404, '账号不存在');
+            db.users.forEach((u) => { if (u.super) delete u.super; });
+            target.super = true;
+            target.updatedAt = now();
+            await writeCritical(USERS, db);
+            return { id: target.id, nickname: target.nickname };
+        });
     }
 
     /** 授 / 撤管理员。只翻一个布尔标记，密码仍然是原来的 scrypt 哈希，不碰 */
@@ -1699,6 +1741,8 @@ function createStore(dataDir, options) {
         listAdminUsers,
         listAdminGroups,
         countAdmins,
+        countSupers,
+        transferSuper,
         setUserAdmin,
         resetUserPassword,
         deleteGroupAsAdmin,

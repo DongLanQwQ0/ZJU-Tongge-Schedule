@@ -116,7 +116,7 @@ let base;
 
 before(async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-captcha-'));
-    server = await createServer({
+    server = await createServer({ vault: false,
         dataDir: dataDir,
         port: 0,
         skipCleanup: true,
@@ -269,7 +269,7 @@ test('登录：没连错过的账号不该平白多一道题', async () => {
 
 test('关掉验证码时（captcha:false）：接口要说实话，注册也不再要它', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-captcha-off-'));
-    const off = await createServer({
+    const off = await createServer({ vault: false,
         dataDir: dir, port: 0, skipCleanup: true, captcha: false,
         limits: {
             registerBurst: { windowMs: 60000, max: 1000, message: 'x' },

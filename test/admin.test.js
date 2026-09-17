@@ -28,7 +28,7 @@ const LIMITS = {
 
 before(async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-admin-'));
-    server = await createServer({ captcha: false, dataDir, port: 0, skipCleanup: true, limits: LIMITS });
+    server = await createServer({ vault: false, captcha: false, dataDir, port: 0, skipCleanup: true, limits: LIMITS });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
     base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -63,7 +63,7 @@ const api = (pathname, opts) => call(base, pathname, opts);
  */
 async function withFreshServer(fn) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-fresh-'));
-    const srv = await createServer({ captcha: false, dataDir: dir, port: 0, skipCleanup: true, limits: LIMITS });
+    const srv = await createServer({ vault: false, captcha: false, dataDir: dir, port: 0, skipCleanup: true, limits: LIMITS });
     await new Promise((r) => srv.listen(0, '127.0.0.1', r));
     const host = `http://127.0.0.1:${srv.address().port}`;
     try {

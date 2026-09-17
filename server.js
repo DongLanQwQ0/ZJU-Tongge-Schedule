@@ -19,6 +19,7 @@ const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
 const captcha = require('./shared/captcha.js');
+const vaultLib = require('./shared/vault.js');
 const { createStore, fail, validateCode } = require('./shared/store.js');
 const config = require('./shared/config.js');
 
@@ -263,10 +264,67 @@ function clientIp(req) {
 
 // ---------------------------------------------------------------- 服务
 
+/**
+ * 根密钥 → vault 实例。
+ *
+ * 三条规则：
+ *   options.vault === false   显式关闭加密（**只给测试用**；正式入口永远不给这个值）
+ *   options.vault 是实例       直接用它
+ *   其余                      从环境读 TONGGE_ROOT_KEY，**缺失或格式错一律拒绝启动**
+ *
+ * 正式入口不给"默认不加密"这条退路：悄悄退化成明文存盘，比启动失败危险得多 ——
+ * 前者没人会发现，后者一眼就看见。
+ */
+function resolveVault(options) {
+    if (options.vault === false) return null;
+    if (options.vault) return options.vault;
+    let key;
+    try {
+        key = vaultLib.fromEnv();
+    } catch (e) {
+        throw new Error(`根密钥格式不对：${e.message}`);
+    }
+    if (!key) {
+        throw new Error([
+            '没有配置根密钥 TONGGE_ROOT_KEY，拒绝启动（不允许明文存盘）。',
+            '  生成一把：',
+            '    node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+            '  写进**部署目录之外**的文件（例如 /etc/tongge/key.env），',
+            '  再由 compose 的 env_file 注入；绝不要和数据卷一起备份。'
+        ].join('\n'));
+    }
+    return vaultLib.createVault(key);
+}
+
 async function createServer(options = {}) {
     const port = options.port || Number(process.env.PORT) || 3000;
-    const store = createStore(options.dataDir || DATA);
-    await store.init();
+    const vault = resolveVault(options);
+    const store = createStore(options.dataDir || DATA, { vault });
+
+    try {
+        await store.init();
+    } catch (e) {
+        // 根密钥不对时，解第一条密文就会抛 VaultError —— 在这里翻译成人能看懂的话
+        if (e && e.name === 'VaultError') {
+            throw new Error(`根密钥不对（或数据被改过），拒绝启动：${e.message}`);
+        }
+        throw e;
+    }
+
+    // 启动自检：还有明文就拒绝启动。
+    // 不做惰性迁移（读到明文就顺手加密）——那样没被碰过的字段会一直是明文，
+    // 目标就落空了；而且"一半明文一半密文"的中间态最难排查。
+    if (vault) {
+        const pending = await store.pendingPlaintext();
+        if (pending.length) {
+            throw new Error([
+                `数据还没迁移：${pending.length} 处敏感字段仍是明文，拒绝启动。`,
+                '  停掉服务后执行（迁移不能和服务同时跑，否则会被覆盖回明文）：',
+                '    node server.js --migrate-vault --super <超管昵称>'
+            ].join('\n'));
+        }
+    }
+
     if (!options.skipCleanup) store.cleanup().catch((e) => console.error('[cleanup]', e.message));
 
     // ------------------------------------------------------------ 注册验证码
@@ -959,6 +1017,7 @@ async function createServer(options = {}) {
 
     server.store = store;
     server.port = port;
+    server.encrypted = !!vault;
     return server;
 }
 
@@ -967,10 +1026,14 @@ async function createServer(options = {}) {
  *   --port <端口>
  *   --make-admin <昵称>     把这个账号设为管理员
  *   --revoke-admin <昵称>   取消管理员
+ *   --migrate-vault         把明文数据就地转成密文（跑完即退出，不启服务）
+ *   --super <昵称>          配合 --migrate-vault：指定唯一的超级管理员
+ *   --set-super <昵称>      单独改超级管理员（从旧的那位移交过来）
+ *   --data-dir <目录>       指定数据目录（本地演练时指向副本，不动真数据）
  *
  * 授权走命令行而不是网页，是因为这是**本机操作** —— 能敲这条命令就说明
  * 你本来就摸得到 data/ 目录，不需要再发明一套引导密码。
- * 也正因如此，这里全程不碰密码：只翻 user.admin 这一个布尔值。
+ * 也正因如此，这里全程不碰密码：只翻 user.admin / user.super 这两个标记。
  */
 function parseArgs(argv) {
     const opts = {};
@@ -978,6 +1041,10 @@ function parseArgs(argv) {
         if (argv[i] === '--port') opts.port = Number(argv[++i]);
         else if (argv[i] === '--make-admin') opts.makeAdmin = argv[++i];
         else if (argv[i] === '--revoke-admin') opts.revokeAdmin = argv[++i];
+        else if (argv[i] === '--migrate-vault') opts.migrateVault = true;
+        else if (argv[i] === '--super') opts.super = argv[++i];
+        else if (argv[i] === '--set-super') opts.setSuper = argv[++i];
+        else if (argv[i] === '--data-dir') opts.dataDir = argv[++i];
     }
     return opts;
 }
@@ -1014,6 +1081,59 @@ async function runAdminCli(opts) {
 }
 
 /**
+ * 迁移 CLI：把明文数据就地转成密文，顺手指定唯一的超级管理员。
+ *
+ * 为什么不放进 HTTP 服务里（比如做成一个管理接口）：迁移必须在**服务停掉之后**跑 ——
+ * 运行中的进程内存里是明文，任何一次写入都会把迁移结果覆盖回明文。
+ * 所以它是一条独立命令，跑完就退出。整个流程见
+ * docs/superpowers/specs/2026-09-17-storage-encryption-design.md 第 13 节。
+ */
+async function runMigrateCli(opts) {
+    const vault = resolveVault({});                 // 迁移必须有钥匙
+    const store = createStore(opts.dataDir || DATA, { vault });
+    await store.init();
+
+    console.log('');
+    const pending = await store.pendingPlaintext();
+    if (!pending.length) {
+        console.log('  没有需要迁移的明文（可能已经迁移过）。');
+    } else {
+        console.log(`  发现 ${pending.length} 处明文，开始迁移…`);
+        const report = await store.migrateVault();
+        console.log(`  ✔ 已加密 ${report.fields} 个字段（${report.users} 个账号 / ${report.groups} 个群）`);
+        report.backups.forEach((b) => {
+            console.log(`    明文副本 ${b} —— 确认备份可用后请删掉它（它本身也是泄漏点）`);
+        });
+        if (!report.backups.length) console.log('  （没有产生明文副本，说明文件本来就已经是密文）');
+    }
+
+    const superName = opts.super || opts.setSuper;
+    if (superName) {
+        const u = await findByName(store, superName);
+        if (!u) {
+            console.error(`\n  找不到昵称是「${superName}」的账号，超级管理员没设成。`);
+            console.error('  先在网页上把这个账号注册出来，再回来执行。\n');
+            process.exit(1);
+        }
+        await store.transferSuper(u.id);
+        await store.appendAudit({ event: 'super_set_cli', by: 'cli', target: u.nickname });
+        console.log(`  ✔ 超级管理员：${u.nickname}  (${u.id})`);
+    }
+
+    const supers = await store.countSupers();
+    if (supers !== 1) {
+        console.log(`  ⚠ 当前超级管理员有 ${supers} 个（应为 1 个）：用 --super <昵称> 指定。`);
+    }
+
+    console.log('');
+    console.log('  接下来：');
+    console.log('    1. docker compose up -d --build      起服务');
+    console.log('    2. 抽查文件里搜不到明文姓名');
+    console.log('    3. 确认备份可用后，删掉上面那些明文副本');
+    console.log('');
+}
+
+/**
  * 进程级兜底。
  *
  * 没有它的话，任何一个没被 catch 住的错误都会让 Node 进程**整个退出** ——
@@ -1041,9 +1161,12 @@ function installCrashGuards(store) {
 async function main() {
     const opts = parseArgs(process.argv.slice(2));
 
-    // 授权是离线操作，做完就退出，不启动服务器
+    // 授权 / 迁移都是离线操作，做完就退出，不启动服务器
     if (opts.makeAdmin !== undefined || opts.revokeAdmin !== undefined) {
         return runAdminCli(opts);
+    }
+    if (opts.migrateVault) {
+        return runMigrateCli(opts);
     }
 
     const server = await createServer(opts);
@@ -1055,6 +1178,7 @@ async function main() {
         console.log(`  发起人     ${config.owner}`);
         console.log('  ─────────────────────────────────────────────');
         console.log(`  本机访问   http://localhost:${server.port}`);
+        console.log(`  存储加密   ${server.encrypted ? '已开启（TONGGE_ROOT_KEY）' : '⚠ 未开启（只应出现在测试里）'}`);
         console.log('  正式服     对外由反向代理提供 HTTPS，站点形如 https://<主机>/tongge/');
         console.log('             这里不再打印网卡地址：正式服的入口是反代，不是本机端口。');
         if (suspects.length) {
