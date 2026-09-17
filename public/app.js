@@ -2407,11 +2407,36 @@
         var menu = $('#more-menu');
         if (!btn || !menu) return;
 
+        /**
+         * 收起也要有动画，和展开对称：加 .closing 先播一段，再由 animationend 收尾。
+         * 兜底的 setTimeout 是必须的 —— 系统开了「减弱动态效果」或动画被别处禁掉时
+         * animationend 不会来，没有兜底菜单就永远收不回去（和 closeModal 同一个道理）。
+         */
+        var closeTimer = null;
+        function finishClose() {
+            if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+            menu.classList.remove('closing');
+            menu.hidden = true;
+        }
         function setOpen(open) {
-            menu.hidden = !open;
+            if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+            if (open) {
+                menu.hidden = false;
+                menu.classList.remove('closing');
+            } else if (!menu.hidden) {
+                menu.classList.add('closing');
+                closeTimer = setTimeout(finishClose, 220);
+            }
             btn.setAttribute('aria-expanded', open ? 'true' : 'false');
         }
-        btn.addEventListener('click', function () { setOpen(menu.hidden); });
+        menu.addEventListener('animationend', function () {
+            if (menu.classList.contains('closing')) finishClose();
+        });
+
+        btn.addEventListener('click', function () {
+            // 收起动画还没播完就再点一下：应当重新展开，而不是被当成又一次「收起」
+            setOpen(menu.hidden || menu.classList.contains('closing'));
+        });
         // 菜单里任何一项点下去都收起（主题、管理、退出都一样）
         menu.addEventListener('click', function () { setOpen(false); });
         document.addEventListener('click', function (e) {

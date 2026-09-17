@@ -177,7 +177,8 @@ a.icon-btn { text-decoration: none; }
 /* 系统设了「减少动态效果」就别做展开动画，但说明照样显示 */
 @media (prefers-reduced-motion: reduce) {
     .icon-btn.star-btn, .icon-btn.star-btn .star-text { transition: none; }
-    .more-menu { animation: none; }
+    /* .closing 那两个类选择器权重更高，得单独再关一次，否则收起动画照样播 */
+    .more-menu, .more-menu.closing { animation: none; }
 }
 
 /* ------------------------------------------------- 顶栏「更多」菜单
@@ -196,6 +197,12 @@ a.icon-btn { text-decoration: none; }
 @keyframes menu-pop {
     from { opacity: 0; transform: translateY(-6px) scale(.94); }
     to { opacity: 1; transform: none; }
+}
+/* 收起：反向播一遍，收回去的方向和弹出来的方向一致（都是右上角） */
+.more-menu.closing { animation: menu-unpop .13s ease-in forwards; }
+@keyframes menu-unpop {
+    from { opacity: 1; transform: none; }
+    to { opacity: 0; transform: translateY(-6px) scale(.96); }
 }
 .menu-item {
     display: flex; align-items: center; gap: 9px; width: 100%;

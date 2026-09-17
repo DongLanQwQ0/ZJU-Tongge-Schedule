@@ -891,8 +891,18 @@ test('顶栏「更多」菜单：点 ⋯ 展开、选完一项收起', async () 
     assert.equal(a.el('#btn-more').getAttribute('aria-expanded'), 'true');
 
     a.click('#btn-theme');                       // 点菜单里的主题那一项
-    assert.equal(a.el('#more-menu').hidden, true, '选完一项就收起');
+    assert.ok(a.el('#more-menu')._classes.has('closing'), '收起也要先播一段动画，不能瞬变');
+    await tick(300);                             // 垫片里没有动画事件，走 220ms 兜底
+    assert.equal(a.el('#more-menu').hidden, true, '动画/兜底之后才真的收起');
     assert.equal(a.el('#btn-more').getAttribute('aria-expanded'), 'false');
+
+    // 收起动画还没播完就再点一下，应当重新展开
+    a.click('#btn-more');
+    a.click('#btn-theme');
+    assert.ok(a.el('#more-menu')._classes.has('closing'), '先处于收起中');
+    a.click('#btn-more');
+    assert.equal(a.el('#more-menu').hidden, false, '收起中来一下就重新展开');
+    assert.ok(!a.el('#more-menu')._classes.has('closing'), '重开要把 closing 摘掉');
 });
 
 test('移除成员：确认按钮要按两次才真的移除', async () => {
