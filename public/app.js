@@ -2448,24 +2448,29 @@
     /**
      * 分享这个站点本身（不带邀请码，就是站点首页）。
      *
-     * 手机上有 navigator.share，走系统分享面板直接发到微信/QQ；
-     * 桌面浏览器大多没有这个 API，就退回复制链接。
+     * 手机上走 navigator.share 弹系统分享面板，桌面上大多没有这个 API 就退回复制。
+     * **一定要带上描述**：光甩一个链接，群里的人不知道点开是干嘛的。
      * 注意 share() 必须在点击手势里同步调用，前面不能 await 任何东西，否则会被拒。
      */
     async function shareSite() {
         var url = new URL('./', document.baseURI).href;
         var cfg = (window.DSH && window.DSH.config) || {};
         var title = cfg.appName ? cfg.appName + ' · ' + cfg.tagline : '同格';
+        var desc = cfg.desc || '';
         if (navigator.share) {
             try {
-                await navigator.share({ title: title, text: title, url: url });
+                await navigator.share({
+                    title: title,
+                    text: desc ? title + '\n' + desc : title,
+                    url: url
+                });
                 return;
             } catch (e) {
                 // 用户自己点了取消也会走到这里，那就别再弹「已复制」打扰他
                 if (e && e.name === 'AbortError') return;
             }
         }
-        copyText(url, '链接已复制，发给同学就行');
+        copyText([title, desc, url].filter(Boolean).join('\n'), '链接已复制，发给同学就行');
     }
 
     /**

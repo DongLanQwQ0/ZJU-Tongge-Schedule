@@ -498,7 +498,8 @@ docker run --rm -v tongge-data:/data -v "$PWD:/backup" alpine \
 return {
     owner: 'DongLanQwQ',                       // 发起人昵称，出现在「有问题找谁」的文案与启动横幅里
     appName: '同格',                            // 服务名
-    tagline: '与一个或一群有趣的人同行'          // 一句话说明（项目的初衷）
+    tagline: '与一个或一群有趣的人同行',          // 一句话说明（项目的初衷）
+    desc: '传上课表、建个群，就能看到你和同学哪几节课在一起、教室离得多近'   // 功能说明：分享时用
 };
 ```
 

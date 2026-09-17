@@ -245,11 +245,19 @@ main { max-width: 720px; margin: 0 auto; padding: 14px; }
 label.field { display: block; margin-bottom: 10px; }
 label.field span { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 5px; }
 
-/* 登录页：那句初衷要站 C 位（不再是灰小字），功能说明另外放（见 .auth-note） */
+/* 登录页：那句初衷就是**主标题**，「同格」退成上面的品牌标记。
+   功能说明另外放（见 .auth-note），不跟它抢位置。 */
+.auth-brand {
+    margin-top: 8px;
+    font-size: 17px; font-weight: 600; letter-spacing: 5px;
+    color: var(--text-2);
+}
 .auth-tagline {
     margin-top: 10px;
-    font-size: 16px; font-weight: 600;
-    color: var(--text); letter-spacing: .6px;
+    /* 一行要放得下 13 个字：窄屏就跟着视口缩，别折行 */
+    font-size: clamp(17px, 5.2vw, 22px);
+    font-weight: 700; line-height: 1.45; letter-spacing: .5px;
+    color: var(--text);
 }
 .auth-note {
     margin-top: 16px; text-align: center;

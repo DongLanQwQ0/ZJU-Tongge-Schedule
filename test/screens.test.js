@@ -951,8 +951,10 @@ test('分享：菜单里那一项会把站点地址复制出来（垫片里没�
     a.click('#btn-share');
     await tick(50);
 
-    assert.ok(copied, '应当复制出链接');
-    assert.ok(copied.startsWith(base), `复制的应当是本站地址：${copied}`);
+    assert.ok(copied, '应当复制出内容');
+    assert.match(copied, /与一个或一群有趣的人同行/, '要带上那句初衷');
+    assert.match(copied, /传上课表|哪几节课/, '要带上功能描述 —— 光有链接没人知道点开干嘛');
+    assert.ok(copied.includes(base), `要带上本站地址：${copied}`);
     assert.ok(!copied.includes('code='), '分享站点首页，不该把当前屏的邀请码带出去');
 });
 
