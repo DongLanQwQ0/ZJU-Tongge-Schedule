@@ -881,6 +881,13 @@ test('群组页：邀请码、二维码、周次胶囊都渲染出来', async ()
     assert.equal(a.el('#btn-group-delete').hidden, false, '群主看得见解散');
 });
 
+test('求 Star 的入口：顶栏第一次出现时是展开的', async () => {
+    const u = await user();
+    const a = await started(base, { token: u.token });
+    assert.ok(a.el('#btn-star').classList.contains('open'), '顶栏出现时应当展开说明');
+    // 「10 秒后收起」没在这里等：等 10 秒会让整个套件变慢，而那句 setTimeout 很直白
+});
+
 test('群组页：复制链接会把群名一起带上', async () => {
     const owner = await user();
     await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '信工饭饭' } });

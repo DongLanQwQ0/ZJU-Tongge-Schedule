@@ -22,11 +22,13 @@
 <body>
 
 <header class="topbar" id="topbar" hidden>
+    <!-- 左上角的求 Star：顶栏一出现就展开把话说清楚，10 秒后收回成一颗 ⭐。
+         展开 / 收起由 app.js 的 revealStar() 控制，样式见 style.css 的 .star-btn -->
+    <a class="icon-btn star-btn" id="btn-star" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule" target="_blank" rel="noopener noreferrer" title="去 GitHub 点个 Star ⭐"><span aria-hidden="true">⭐</span><span class="star-text">求个 Star 🥺</span></a>
     <button class="icon-btn" id="btn-back" hidden title="返回">‹</button>
     <h1 id="topbar-title">同格</h1>
     <span class="who" id="topbar-who"></span>
     <button class="icon-btn" id="btn-admin" title="管理" hidden>🛠</button>
-    <a class="icon-btn" id="btn-star" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule" target="_blank" rel="noopener noreferrer" title="去 GitHub 点个 Star ⭐">⭐</a>
     <button class="icon-btn" id="btn-theme" title="切换深色 / 浅色">🌙</button>
     <button class="icon-btn" id="btn-logout" title="退出登录">⎋</button>
 </header>

@@ -202,6 +202,23 @@
     var navSilent = false;    // popstate 触发的重画不要再压新记录
     var navDepth = 0;         // 本次会话自己压了多少层，存在历史记录里
 
+    /**
+     * 左上角那颗求 Star：**每次加载**先展开 10 秒把话说清楚，再收回成一颗 ⭐。
+     *
+     * 计时从「顶栏第一次出现」算起，而不是页面加载那一刻 —— 顶栏在登录页是藏起来的，
+     * 从加载就开始计时的话，登录慢一点的人永远看不到那句说明。
+     */
+    var STAR_OPEN_MS = 10 * 1000;
+    var starRevealed = false;
+    function revealStar() {
+        if (starRevealed) return;                 // 一次加载只展开一次
+        var el = $('#btn-star');
+        if (!el) return;
+        starRevealed = true;
+        el.classList.add('open');
+        setTimeout(function () { el.classList.remove('open'); }, STAR_OPEN_MS);
+    }
+
     /** 只负责把某一屏画出来，不碰历史 */
     function renderScreen(id, opts) {
         opts = opts || {};
@@ -209,6 +226,7 @@
         $$('.screen').forEach(function (s) { s.classList.toggle('active', s.id === 'screen-' + id); });
         var topbar = $('#topbar');
         topbar.hidden = id === 'auth';
+        if (!topbar.hidden) revealStar();
         $('#btn-back').hidden = !opts.back;
         backTo = opts.back || null;
         $('#topbar-title').textContent = opts.title || '同格';

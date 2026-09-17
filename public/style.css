@@ -156,6 +156,27 @@ a { color: var(--blue); }
 /* 顶栏那颗 Star 是 <a>（要能跳外链），补掉链接默认的下划线与取色 */
 a.icon-btn { text-decoration: none; }
 
+/* ------------------------------------------------- 左上角那颗求 Star
+   顶栏一出现就展开（⭐ + 一句说明），10 秒后收回成一颗圆图标 —— 加 / 去 .open
+   由 app.js 的 revealStar() 控制。
+   展开靠 max-width 过渡：说明文字宽度不确定，直接 transition width 动不起来。 */
+.icon-btn.star-btn {
+    width: auto; padding: 0 6px; border-radius: 17px;
+    grid-auto-flow: column; gap: 0;
+    transition: padding .35s ease, gap .35s ease;
+}
+.icon-btn.star-btn.open { padding: 0 11px; gap: 6px; }
+.icon-btn.star-btn .star-text {
+    max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap;
+    font-size: 12px; font-weight: 600;
+    transition: max-width .45s ease, opacity .3s ease;
+}
+.icon-btn.star-btn.open .star-text { max-width: 130px; opacity: 1; }
+/* 系统设了「减少动态效果」就别做展开动画，但说明照样显示 */
+@media (prefers-reduced-motion: reduce) {
+    .icon-btn.star-btn, .icon-btn.star-btn .star-text { transition: none; }
+}
+
 /* ------------------------------------------------------------ 布局 */
 
 main { max-width: 720px; margin: 0 auto; padding: 14px; }
