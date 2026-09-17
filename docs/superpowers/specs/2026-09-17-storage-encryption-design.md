@@ -187,3 +187,46 @@ T2 挡不住是**信息论限制**，不是实现取舍：服务器必须能解�
 1. `shared/vault.js` + 单测 —— 纯新增，不动现有行为
 2. store 读写边界接入（昵称 / 课表 / 私密备注 / 对外备注）+ 迁移命令 + 现有测试适配 —— **此步之后，文件里再无明文姓名与课表**
 3. 超管模型（`super` 唯一 + 守卫清单 + 备注访问接口与审计）+ 配套：会话令牌哈希化、镜像/部署包不带 `data/`、部署与密钥保管文档
+
+## 13. 部署与迁移顺序
+
+这套服务的部署方式是**手动用仓库代码覆盖**（`git pull` 到部署目录），所以顺序必须写死。三条约束：
+
+1. **迁移必须由新代码执行**——旧代码不认识密文格式。所以代码要先就位。
+   注意区分两件事：迁移是"新代码在运行"（CLI 模式，不启 HTTP），但**必须在旧服务停掉之后**跑。
+2. **迁移期间服务必须停**——运行中的服务内存里是明文，任何一次写入都会把迁移结果覆盖回明文。
+3. **服务启动时检测到未迁移的明文就拒绝启动**，并提示跑迁移命令。避免"一半明文一半密文"的中间态悄悄上线。
+
+```bash
+# 0. 备份（数据在命名卷 tongge-data 里）
+docker run --rm -v tongge-data:/data -v "$PWD:/backup" alpine \
+  tar czf /backup/tongge-$(date +%Y%m%d-%H%M).tar.gz -C /data .
+
+# 1. 生成根密钥，放到部署目录之外 —— 绝不能和数据放一起、也绝不能进备份
+KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+sudo install -d -m 700 /etc/tongge
+printf 'TONGGE_ROOT_KEY=%s\n' "$KEY" | sudo tee /etc/tongge/key.env >/dev/null
+sudo chmod 600 /etc/tongge/key.env
+
+# 2. 代码就位（覆盖）
+cd /opt/tongge && git pull
+#    compose 的 tongge 服务下加一行：env_file: /etc/tongge/key.env
+
+# 3. 停掉旧服务（这一步不能省：不停会覆盖迁移结果）
+docker compose stop
+
+# 4. 用新代码跑迁移（CLI 模式，不启 HTTP；缺根密钥会直接报错并告诉你怎么生成）
+docker compose run --rm tongge node server.js --migrate-vault --super DongLan
+
+# 5. 起服务
+docker compose up -d --build
+
+# 6. 验证：能登录、能看备注；再抽查卷里搜不到任何备注原文
+docker run --rm -v tongge-data:/data alpine \
+  grep -rl "把这里换成你知道的某条备注原文" /data || echo "文件里已无该明文 ✓"
+
+# 7. 确认备份可用后，删掉迁移留下的明文副本（它本身也是泄漏点）
+docker run --rm -v tongge-data:/data alpine sh -c 'rm -f /data/*.plaintext-*'
+```
+
+**为什么不做"读到明文就顺手加密"的惰性迁移**：那样没被碰过的字段会一直是明文，"文件被拿走读不出"这个目标就兑现不了；而且一半明文一半密文的中间态最难排查。宁可停机几分钟、跑一条命令、看一眼结果。
