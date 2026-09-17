@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createServer } = require('../server.js');
+const { createServer, resolveVault } = require('../server.js');
 const { createStore } = require('../shared/store.js');
 const vaultMod = require('../shared/vault.js');
 
@@ -67,12 +67,38 @@ test('没有根密钥：拒绝启动，并告诉你怎么生成', async () => {
     const saved = process.env.TONGGE_ROOT_KEY;
     delete process.env.TONGGE_ROOT_KEY;
     try {
+        // repoDir 指到这个空目录：本机开发那把 .tongge/key.env 不在那儿，
+        // 于是"没有钥匙"这件事才是真的没有
         await assert.rejects(
-            () => createServer({ captcha: false, dataDir: dir, port: 0, skipCleanup: true }),
+            () => createServer({ captcha: false, dataDir: dir, repoDir: dir, port: 0, skipCleanup: true }),
             /TONGGE_ROOT_KEY/
         );
     } finally {
         if (saved !== undefined) process.env.TONGGE_ROOT_KEY = saved;
+    }
+});
+
+test('本机开发钥匙文件：非 production 时认，production 时绝不认', () => {
+    const dir = newDir();
+    fs.mkdirSync(path.join(dir, '.tongge'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.tongge', 'key.env'), 'TONGGE_ROOT_KEY=' + 'a'.repeat(64) + '\n');
+
+    const savedKey = process.env.TONGGE_ROOT_KEY;
+    const savedEnv = process.env.NODE_ENV;
+    delete process.env.TONGGE_ROOT_KEY;
+    try {
+        const v = resolveVault({ repoDir: dir });
+        assert.ok(v, '非 production 下应当认这个文件');
+        assert.equal(v.keySource, '本机开发文件 .tongge/key.env', '横幅要能说出钥匙是从哪来的');
+
+        // 镜像里 NODE_ENV=production —— 部署目录里就算躺着 key.env 也不许认，
+        // 否则本地那把钥匙会悄悄顶替线上那把（表现是解密全线失败）
+        process.env.NODE_ENV = 'production';
+        assert.throws(() => resolveVault({ repoDir: dir }), /TONGGE_ROOT_KEY/);
+    } finally {
+        if (savedKey !== undefined) process.env.TONGGE_ROOT_KEY = savedKey;
+        if (savedEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = savedEnv;
     }
 });
 

@@ -11,10 +11,16 @@
  *
  * 钥匙从环境变量 TONGGE_ROOT_KEY 来，**绝不在数据卷里**。这一点是整个方案
  * 有效性的全部基础：钥匙和数据躺在一起，加密就等于没做。
+ *
+ * 唯一的例外是本机开发：NODE_ENV 不是 production 时，也认仓库根的
+ * `.tongge/key.env`（见 fromLocalFile）—— 免得每次开发都要先 export 一遍。
+ * 容器里 NODE_ENV=production，所以这条捷径进不了正式服。
  */
 'use strict';
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const KEY_BYTES = 32;
 const KEY_HEX_LEN = KEY_BYTES * 2;
@@ -69,6 +75,36 @@ function fromEnv(env) {
     const raw = (env || process.env).TONGGE_ROOT_KEY;
     if (raw == null || String(raw).trim() === '') return null;
     return parseKeyHex(raw);
+}
+
+/** 本机开发用的钥匙文件（相对仓库根） */
+const LOCAL_KEY_FILE = path.join('.tongge', 'key.env');
+
+/**
+ * 从本机开发的钥匙文件取根密钥；没有这个文件就返回 null。
+ *
+ * 正式服的钥匙在 `/etc/tongge/key.env`（部署目录**之外**），但本机开发每次都要先
+ * export 一遍太别扭，于是允许放在仓库根的 `.tongge/key.env`。
+ *
+ * **只在 NODE_ENV !== 'production' 时读。** 这一条是关键：镜像里 NODE_ENV 是
+ * production，所以正式服永远只认环境变量，不会因为部署目录里恰好躺着一个
+ * key.env 就悄悄换了钥匙（本地与线上各一把，混起来就是解密全线失败）。
+ *
+ * 文件在、但里面的值格式不对时**照样抛** —— 和 fromEnv 一样，
+ * 不能把"配错了"当成"没配"。
+ */
+function fromLocalFile(repoDir, env) {
+    if ((env || process.env).NODE_ENV === 'production') return null;
+    let text;
+    try {
+        text = fs.readFileSync(path.join(repoDir || path.join(__dirname, '..'), LOCAL_KEY_FILE), 'utf8');
+    } catch (_) {
+        return null;
+    }
+    // 允许文件里带注释、空行，也允许以后再放别的变量
+    const m = /^[ \t]*TONGGE_ROOT_KEY[ \t]*=[ \t]*(\S+)[ \t]*$/m.exec(text);
+    if (!m) return null;
+    return parseKeyHex(m[1]);
 }
 
 /**
@@ -156,11 +192,13 @@ module.exports = {
     VERSION,
     KEY_BYTES,
     KEY_HEX_LEN,
+    LOCAL_KEY_FILE,
     VaultError,
     createVault,
     randomKeyHex,
     parseKeyHex,
     fromEnv,
+    fromLocalFile,
     isSealed,
     aadOf
 };

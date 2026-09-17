@@ -14,6 +14,13 @@ test/
 docs/
 node_modules/
 
+# 密钥：本机开发那把（.tongge/key.env）与任何随手放的 .env。
+# 镜像里 NODE_ENV=production，服务本来就不会去读它们 —— 这里是第二道闸：
+# 构建上下文不该带着钥匙走来走去。
+.tongge/
+.env
+.env.*
+
 # 编辑器与系统
 .vscode/
 .idea/

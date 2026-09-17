@@ -369,7 +369,9 @@ function resolveClientIp(req, trusted) {
  * 三条规则：
  *   options.vault === false   显式关闭加密（**只给测试用**；正式入口永远不给这个值）
  *   options.vault 是实例       直接用它
- *   其余                      从环境读 TONGGE_ROOT_KEY，**缺失或格式错一律拒绝启动**
+ *   其余                      环境变量 TONGGE_ROOT_KEY，本机开发还可以放
+ *                             `.tongge/key.env`（NODE_ENV 不是 production 时才认）；
+ *                             **缺失或格式错一律拒绝启动**
  *
  * 正式入口不给"默认不加密"这条退路：悄悄退化成明文存盘，比启动失败危险得多 ——
  * 前者没人会发现，后者一眼就看见。
@@ -377,22 +379,41 @@ function resolveClientIp(req, trusted) {
 function resolveVault(options) {
     if (options.vault === false) return null;
     if (options.vault) return options.vault;
-    let key;
+
+    // 本机开发的钥匙文件按仓库根找。repoDir 是给测试的接缝：
+    // 指到一个空目录 = 假装这台机器上没有那把钥匙（否则本机跑测试时，
+    // 仓库里真实存在的 .tongge/key.env 会把"没有钥匙"的用例悄悄喂饱）
+    const repoDir = options.repoDir || __dirname;
+    let key = null;
+    let source = '';
     try {
         key = vaultLib.fromEnv();
+        if (key) {
+            source = '环境变量 TONGGE_ROOT_KEY';
+        } else {
+            key = vaultLib.fromLocalFile(repoDir);
+            if (key) source = '本机开发文件 .tongge/key.env';
+        }
     } catch (e) {
         throw new Error(`根密钥格式不对：${e.message}`);
     }
     if (!key) {
         throw new Error([
             '没有配置根密钥 TONGGE_ROOT_KEY，拒绝启动（不允许明文存盘）。',
-            '  生成一把（服务器上一般没装 node，用容器版）：',
+            '  正式服（服务器上一般没装 node，用容器生成）：',
             '    docker run --rm node:22-alpine node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
             '  写进**部署目录之外**的文件（例如 /etc/tongge/key.env），',
-            '  再由 compose 的 env_file 注入；绝不要和数据卷一起备份。'
+            '  再由 compose 的 env_file 注入；绝不要和数据卷一起备份。',
+            '  本机开发（NODE_ENV 不是 production 时才认）：',
+            '    生成一把放进仓库根的 .tongge/key.env，之后再跑就不用管了：',
+            '      node -e "console.log(\'TONGGE_ROOT_KEY=\' + require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
         ].join('\n'));
     }
-    return vaultLib.createVault(key);
+    const vault = vaultLib.createVault(key);
+    // 记住钥匙是从哪来的：横幅上要印出来。本机与正式服各有一把，弄混了
+    // 就是"解密全线失败"，所以这件事值得在启动时写得明明白白。
+    vault.keySource = source;
+    return vault;
 }
 
 async function createServer(options = {}) {
@@ -1198,6 +1219,7 @@ async function createServer(options = {}) {
     server.store = store;
     server.port = port;
     server.encrypted = !!vault;
+    server.keySource = vault ? (vault.keySource || 'TONGGE_ROOT_KEY') : '';
     server.superCount = superCount;
     server.trustedProxies = trusted;
     // 版本号 / 构建号：横幅上印一份，页脚那行字也取自这里（见 /api/meta）
@@ -1365,7 +1387,7 @@ async function main() {
         console.log(`  发起人     ${config.owner}`);
         console.log('  ─────────────────────────────────────────────');
         console.log(`  本机访问   http://localhost:${server.port}`);
-        console.log(`  存储加密   ${server.encrypted ? '已开启（TONGGE_ROOT_KEY）' : '⚠ 未开启（只应出现在测试里）'}`);
+        console.log(`  存储加密   ${server.encrypted ? `已开启（${server.keySource}）` : '⚠ 未开启（只应出现在测试里）'}`);
         const tp = server.trustedProxies;
         console.log(`  限流依据   ${tp.count === 0
             ? '直连地址（不信任任何转发头）'
@@ -1394,4 +1416,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { createServer, resolveClientIp, parseTrustedProxies };
+module.exports = { createServer, resolveVault, resolveClientIp, parseTrustedProxies };

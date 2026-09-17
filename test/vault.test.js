@@ -8,6 +8,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const vault = require('../shared/vault.js');
 
@@ -148,6 +151,38 @@ test('createVault 接受 hex 字符串或 Buffer，长度不对都拒绝', () =>
     assert.equal(typeof vault.createVault(KEY_A).seal, 'function');
     assert.equal(typeof vault.createVault(Buffer.from(KEY_A, 'hex')).seal, 'function');
     assert.throws(() => vault.createVault(Buffer.alloc(16)), (e) => e.code === 'BAD_KEY');
+});
+
+// ---------------------------------------------------------------- 本机开发用的钥匙文件
+
+/** 造一个带 .tongge/key.env 的假仓库 */
+function repoWithKeyFile(content) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-vault-'));
+    if (content !== null) {
+        fs.mkdirSync(path.join(dir, '.tongge'), { recursive: true });
+        fs.writeFileSync(path.join(dir, '.tongge', 'key.env'), content);
+    }
+    return dir;
+}
+
+test('fromLocalFile：本机开发读 .tongge/key.env（可以带注释和空行）', () => {
+    const dir = repoWithKeyFile('# 本机开发用，不是线上那把\n\nTONGGE_ROOT_KEY=' + KEY_A + '\n');
+    assert.equal(vault.fromLocalFile(dir, {}).length, 32);
+    assert.equal(vault.fromLocalFile(dir, { NODE_ENV: 'development' }).length, 32);
+});
+
+test('fromLocalFile：NODE_ENV=production 时**根本不看**这个文件', () => {
+    const dir = repoWithKeyFile('TONGGE_ROOT_KEY=' + KEY_A + '\n');
+    // 镜像里就是 production —— 部署目录里就算躺着 key.env，也只认环境变量
+    assert.equal(vault.fromLocalFile(dir, { NODE_ENV: 'production' }), null);
+});
+
+test('fromLocalFile：没有文件 / 文件里没有那一行 → null；值坏了就抛', () => {
+    assert.equal(vault.fromLocalFile(repoWithKeyFile(null), {}), null);
+    assert.equal(vault.fromLocalFile(repoWithKeyFile('# 只有注释\n'), {}), null);
+    assert.equal(vault.fromLocalFile(path.join(os.tmpdir(), 'gcc-根本没有这个目录'), {}), null);
+    const bad = repoWithKeyFile('TONGGE_ROOT_KEY=短了\n');
+    assert.throws(() => vault.fromLocalFile(bad, {}), (e) => e.code === 'BAD_KEY');
 });
 
 test('实例自带 KINDS 与 isSealed（store 按实例用，不必回头 require 模块）', () => {

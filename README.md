@@ -116,13 +116,38 @@ docker compose down              # 停服务（数据在卷里，不会丢）
 ### 本机跑起来（开发 / 预览，1 分钟）
 
 **前提**：装了 Node.js 18 或更新（`node -v` 能打印版本号就行）。**不需要 `npm install`。**
+另外还要一把根密钥——存储加密没有「默认不加密」这条退路，**没钥匙服务会拒绝启动**。
 
 ```bash
+# 一次性：生成一把本机开发专用的钥匙
+#（.tongge/ 已被 .gitignore 与 .dockerignore 排除，不会进版本库、也不会进镜像）
+mkdir .tongge
+node -e "console.log('TONGGE_ROOT_KEY=' + require('crypto').randomBytes(32).toString('hex'))" > .tongge/key.env
+
 node server.js          # 或 npm start
+```
+
+钥匙按这个顺序找：环境变量 `TONGGE_ROOT_KEY` → 仓库根的 `.tongge/key.env`。
+后者**只在 `NODE_ENV` 不是 `production` 时才会被读**，而容器里 `NODE_ENV=production`，
+所以这条捷径永远进不了正式服。启动横幅会把这次用的是哪一把写出来：
+
+```
+  存储加密   已开启（本机开发文件 .tongge/key.env）
 ```
 
 浏览器打开控制台打印的 `http://localhost:3000` 就能用；同网段的其他设备用
 `http://<本机IP>:3000` 也能访问（Windows 首次运行会弹防火墙提示，选「允许访问」）。
+
+> ⚠️ `.tongge/key.env` 是**本机开发**那把，和线上 `/etc/tongge/key.env` 是两把不同的钥匙。
+> 别把本机的 `data/` 直接拷到服务器上（那是用本机钥匙加的密，服务器解不开），反过来同理。
+> 正式服请照 [部署](#部署) 那节，把钥匙放在**部署目录之外**。
+
+**已有的本地 `data/` 还是明文？** 服务会拒绝启动并打印提示（有意的：不允许一半明文一半密文地跑），
+照着跑一次迁移即可（幂等，会在原地留 `*.plaintext-<时间戳>` 回滚副本，确认没问题后删掉）：
+
+```bash
+node server.js --migrate-vault --super <你的昵称>
+```
 
 ---
 
@@ -402,7 +427,7 @@ docker run -d --name tongge \
   发起人     DongLanQwQ
   ─────────────────────────────────────────────
   本机访问   http://localhost:3000
-  存储加密   已开启（TONGGE_ROOT_KEY）
+  存储加密   已开启（环境变量 TONGGE_ROOT_KEY）
   限流依据   真实 IP（可信网段 9 个，默认：本机 + 容器网段）
   正式服     对外由反向代理提供 HTTPS，站点形如 https://<主机>/tongge/
              这里不再打印网卡地址：正式服的入口是反代，不是本机端口。
