@@ -436,7 +436,7 @@
                 // 被节流了，提示改个说法免得让人以为密码错了
                 authError(e.message);
             } else if (e.status === 0) {
-                authError('连不上服务器，检查一下是不是同一个 WiFi');
+                authError('连不上服务器，检查网络后重试');
             }
         } finally {
             btn.disabled = false;
@@ -1408,47 +1408,20 @@
 
     // ------------------------------------------------------------ 二维码
 
-    var metaCache = null;
-
-    async function shareCandidates() {
-        if (!metaCache) {
-            try { metaCache = await API.meta(); } catch (e) { metaCache = { lanUrls: [] }; }
-        }
-        return metaCache.lanUrls || [];
-    }
-
     /**
      * 二维码/链接里该用哪个地址。
      *
-     * 线上（域名或局域网 IP 访问）：直接用当前页面的地址 —— 页面挂在哪个路径下，
-     *   邀请链接就落在哪个路径下，套反向代理的子路径也不会拼错。
-     * 自己用 localhost 打开时必须换成局域网地址，否则同学扫了打不开。
-     * 服务端返回的 lanUrls 已经排过序（虚拟网卡在后），直接取第一个就行 ——
-     * 以前这里还挂了一排「换一个地址试试」的按钮，纯属多余：
-     * 正常人就该拿到第一个可用地址，给一排按钮只会让人不知道该点哪个。
+     * 一律用当前页面的地址：页面挂在哪个路径下（正式服是 /tongge/），邀请链接就落在
+     * 哪个路径下，套反向代理的子路径也不会拼错。
+     *
+     * 以前本机 localhost 打开时会换成服务端探测到的局域网地址（怕同学扫码打不开），
+     * 那是「局域网自用」时代的做法。现在是正式服 + 反代，入口就是站点本身，
+     * 那段网卡探测已经删掉。要在手机上真机测扫码，手工把地址换成内网 IP 即可。
+     *
+     * 保持 async 是因为调用点用了 .then()，改同步就得连带改调用方。
      */
     async function joinUrl(code) {
-        // 正常线上环境
-        if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
-            return new URL('./?code=' + encodeURIComponent(code), document.baseURI).href;
-        }
-
-        // 本地开发：仍然使用服务端提供的局域网地址
-        var list = await shareCandidates();
-
-        if (!list.length) {
-            return new URL('./?code=' + encodeURIComponent(code), document.baseURI).href;
-        }
-
-        var localBase = new URL(document.baseURI);
-        var lanBase = new URL(list[0]);
-
-        localBase.protocol = lanBase.protocol;
-        localBase.host = lanBase.host;
-        localBase.search = '';
-        localBase.hash = '';
-
-        return new URL('./?code=' + encodeURIComponent(code), localBase).href;
+        return new URL('./?code=' + encodeURIComponent(code), document.baseURI).href;
     }
 
     // -------------------------------------------------------- 邀请链接（可多枚、可过期）

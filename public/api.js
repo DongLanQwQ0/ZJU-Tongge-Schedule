@@ -104,7 +104,6 @@
         getToken: getToken,
         setToken: setToken,
         onUnauthorized: function (fn) { onUnauthorized = fn; },
-        meta: function () { return request('api/meta'); },
 
         register: function (nickname, password) {
             return request('api/register', 'POST', { nickname: nickname, password: password });

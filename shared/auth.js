@@ -11,7 +11,7 @@ const { promisify } = require('node:util');
 
 const scrypt = promisify(crypto.scrypt);
 
-// scrypt 参数：内存约 16 MB，单次约 50–80 ms，局域网自用足够
+// scrypt 参数：内存约 16 MB，单次约 50–80 ms，熟人小站点足够
 const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1, keylen: 64 };
 
 /** 生成 16 字节随机盐（hex） */

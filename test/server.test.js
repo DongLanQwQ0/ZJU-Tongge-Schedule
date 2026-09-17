@@ -55,10 +55,15 @@ const COURSE = {
 
 // ---------------------------------------------------------------- 元信息与静态文件
 
-test('GET /api/meta 无需登录', async () => {
+test('GET /api/meta 无需登录，且只回健康信息', async () => {
     const r = await api('/api/meta');
     assert.equal(r.status, 200);
-    assert.ok(Array.isArray(r.body.lanUrls));
+    assert.equal(r.body.ok, true);
+    // 它在正式服上是个免鉴权接口，别再往这里塞网卡与内网地址
+    // （曾经把容器地址 172.x 泄露给任何访问者）
+    assert.equal(r.body.lanUrls, undefined);
+    assert.equal(r.body.interfaces, undefined);
+    assert.equal(r.body.port, undefined);
 });
 
 test('未知接口返回 404，非法方法返回 405', async () => {

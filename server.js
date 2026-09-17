@@ -1,8 +1,15 @@
 /**
- * 同格 —— 找个课搭子一起上课。局域网服务端。
+ * 同格 —— 找个课搭子一起上课。服务端。
  *
  * 零 npm 依赖，只用 node: 内置模块。`node server.js` 即可启动。
- * 绑定 0.0.0.0，同学连同一个 WiFi 用局域网地址访问即可。
+ *
+ * 两种跑法都支持：
+ *   · 正式服：容器里跑，只监听本机端口，对外由反向代理提供 HTTPS，
+ *     站点通常挂在子路径下（形如 https://<主机>/tongge/）
+ *   · 本机开发 / 预览：直接 `node server.js`，浏览器开 http://localhost:<端口>
+ *
+ * 绑 0.0.0.0 是为了让上面两种跑法都成立；正式部署时用防火墙或反代决定
+ * 谁能连进来，别把这个端口直接暴露到公网。
  */
 'use strict';
 
@@ -10,7 +17,6 @@ const http = require('node:http');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
-const os = require('node:os');
 const { createStore, fail, validateCode } = require('./shared/store.js');
 const config = require('./shared/config.js');
 
@@ -190,41 +196,12 @@ function readBody(req, res) {
     });
 }
 
-/** 这些网卡名或网段基本不是「同学能连上的那个」 */
-const VIRTUAL_IFACE = /(vEthernet|Loopback|Virtual|VMware|VirtualBox|Hyper-V|Bluetooth|Npcap|TAP-|Tailscale|ZeroTier|WSL|本地连接\s*\*)/i;
-
-/**
- * 列出可供同学访问的局域网地址。
- * 排序时把虚拟网卡（尤其是 Windows 移动热点的 192.168.137.x）排到后面，
- * 否则二维码可能指向一个同学根本连不上的地址。
- */
-function lanInterfaces() {
-    const out = [];
-    const ifaces = os.networkInterfaces();
-    Object.keys(ifaces).forEach((name) => {
-        (ifaces[name] || []).forEach((ni) => {
-            if (ni.family !== 'IPv4' || ni.internal) return;
-            out.push({
-                name: name,
-                address: ni.address,
-                virtual: VIRTUAL_IFACE.test(name) || /^192\.168\.137\./.test(ni.address)
-            });
-        });
-    });
-    out.sort((a, b) => (a.virtual ? 1 : 0) - (b.virtual ? 1 : 0));
-    return out;
-}
-
-function lanUrls(port) {
-    return lanInterfaces().map((i) => `http://${i.address}:${port}`);
-}
-
 // ---------------------------------------------------------------- 按 IP 限流
 
 /**
  * 固定窗口计数器，按来源 IP 计数。
  *
- * 目的不是防 DDoS（校园网里也没那个必要），而是让**枚举邀请码**和
+ * 目的不是防 DDoS（这个量级的站点也没那个必要），而是让**枚举邀请码**和
  * **批量注册**这两件事不划算：8 位邀请码在 20 次/分钟下要枚举上百年。
  *
  * 记忆体是进程内的一张表，重启即清；每次检查顺手清掉过期条目，不会无限涨。
@@ -350,10 +327,13 @@ async function createServer(options = {}) {
 
     const routes = [
         // ---- 元信息
+        // 健康探针。Dockerfile 与 compose 的 HEALTHCHECK 都打这个接口，
+        // 它也是唯一免鉴权的接口 —— 所以只回「服务活着」这件事，
+        // 不回网卡、内网地址之类的拓扑信息（那些东西对访问者没用，对扫描者有用）。
         ['GET', /^\/api\/meta$/, async () => ({
-            lanUrls: lanUrls(port),
-            interfaces: lanInterfaces().map((i) => ({ name: i.name, address: i.address, virtual: i.virtual })),
-            port: port
+            ok: true,
+            app: config.appName,
+            tagline: config.tagline
         })],
 
         // ---- 账号
@@ -1002,7 +982,6 @@ async function main() {
 
     const server = await createServer(opts);
     installCrashGuards(server.store);
-    const ifaces = lanInterfaces();
     const suspects = await server.store.listSuspects().catch(() => []);
     server.listen(server.port, '0.0.0.0', () => {
         console.log('');
@@ -1010,23 +989,14 @@ async function main() {
         console.log(`  发起人     ${config.owner}`);
         console.log('  ─────────────────────────────────────────────');
         console.log(`  本机访问   http://localhost:${server.port}`);
-        if (ifaces.length) {
-            ifaces.forEach((i, idx) => {
-                const tag = i.virtual ? '  ← 虚拟网卡，同学多半连不上' : (idx === 0 ? '  ← 把二维码发给同学时用这个' : '');
-                console.log(`  同学访问   http://${i.address}:${server.port}  (${i.name})${tag}`);
-            });
-        } else {
-            console.log('  同学访问   （未检测到局域网地址，检查是否连着 WiFi）');
-        }
-        console.log('  ─────────────────────────────────────────────');
-        console.log('  把上面的地址发给同学，他们打开就能注册。');
+        console.log('  正式服     对外由反向代理提供 HTTPS，站点形如 https://<主机>/tongge/');
+        console.log('             这里不再打印网卡地址：正式服的入口是反代，不是本机端口。');
         if (suspects.length) {
             console.log(`  ⚠ 有 ${suspects.length} 个账号被标为「待复核」（同 IP 集中注册），明细见 data/audit.log：`);
             suspects.slice(0, 8).forEach((s) => console.log(`      ${s.nickname}  ${s.regIp}  ${s.reason}`));
             if (suspects.length > 8) console.log(`      …还有 ${suspects.length - 8} 个`);
         }
         console.log('  ─────────────────────────────────────────────');
-        console.log('  首次运行 Windows 会弹防火墙提示，请选「允许访问」。');
         console.log('  按 Ctrl+C 停止服务。');
         console.log('');
     });
@@ -1039,4 +1009,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { createServer, lanUrls };
+module.exports = { createServer };

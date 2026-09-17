@@ -78,11 +78,10 @@ if ! touch "$DATA_DIR/.write-test" 2>/dev/null; then
 fi
 rm -f "$DATA_DIR/.write-test"
 
-# 容器内基本没有「可供同学连的局域网网卡」，启动横幅会提示未检测到。
-# 这里先说清楚，免得看到横幅以为坏了。
-log "提示：容器默认走 bridge 网络，局域网地址在容器内不可见。"
-log "      要让同学连，用 -p 3000:3000 映射到宿主机（推荐），"
-log "      或 Linux 下加 --network host。"
+# 正式服的样子：容器只监听端口，对外由反向代理提供 HTTPS，
+# 站点通常挂在子路径下（形如 https://<主机>/tongge/）。
+log "提示：容器只监听端口，对外由反向代理提供 HTTPS（正式服形如 https://<主机>/tongge/）。"
+log "      compose 默认只映射到 127.0.0.1，公网上不要把这个端口直接暴露出去。"
 log "启动：$*"
 
 exec "$@"
