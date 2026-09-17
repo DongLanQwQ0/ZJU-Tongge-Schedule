@@ -940,6 +940,25 @@ test('移除成员：确认按钮要按两次才真的移除', async () => {
     assert.ok(!detail.body.members.some((m) => m.id === mate.id), '第二下才真的移出');
 });
 
+test('群组页：群主看不到「退群」，成员看得到；解散只有群主有', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '退群可见性' } });
+    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+
+    const a1 = await started(base, { token: owner.token });
+    a1.click(a1.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a1.el('#btn-group-leave').hidden, true, '群主看不到退群（服务端也拒，别让他点了吃报错）');
+    assert.equal(a1.el('#btn-group-delete').hidden, false, '群主看得到解散');
+
+    const a2 = await started(base, { token: mate.token });
+    a2.click(a2.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a2.el('#btn-group-leave').hidden, false, '成员看得到退群');
+    assert.equal(a2.el('#btn-group-delete').hidden, true, '成员看不到解散');
+});
+
 test('分享：菜单里那一项会把站点地址复制出来（垫片里没有系统分享面板）', async () => {
     const u = await user();
     const a = await started(base, { token: u.token });

@@ -1243,6 +1243,9 @@
         $('#btn-rename-group').hidden = !iAmOwner;
         renderUploadHint();
         $('#btn-group-delete').hidden = !iAmOwner;
+        // 群主没有「退群」这条路 —— 服务端也会拒（「你是群主，可以直接解散群组」），
+        // 与其让他点了之后吃一个红字报错，不如直接把这颗按钮藏掉
+        $('#btn-group-leave').hidden = iAmOwner;
 
         // 邀请卡片：展示哪一枚码、有没有可用的码，都在这里定
         var disp = currentDisplayCode();
