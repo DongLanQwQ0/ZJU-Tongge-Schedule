@@ -245,6 +245,17 @@ main { max-width: 720px; margin: 0 auto; padding: 14px; }
 label.field { display: block; margin-bottom: 10px; }
 label.field span { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 5px; }
 
+/* 登录页：那句初衷要站 C 位（不再是灰小字），功能说明另外放（见 .auth-note） */
+.auth-tagline {
+    margin-top: 10px;
+    font-size: 16px; font-weight: 600;
+    color: var(--text); letter-spacing: .6px;
+}
+.auth-note {
+    margin-top: 16px; text-align: center;
+    font-size: 12px; line-height: 1.7; color: var(--text-2);
+}
+
 /* 注册验证码：左边一张算术题图片、右边填答案。
    图按高度定尺寸（宽度跟比例走），式子长了就整体小一点；
    窄屏放不下时输入框换行下去，不挤着图。 */

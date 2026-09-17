@@ -2,7 +2,7 @@
   "name": "tongge",
   "version": "1.0.0",
   "private": true,
-  "description": "同格 · 找个课搭子一起上课 —— 零依赖 Node 服务 + 纯前端，浏览器本地解析课表",
+  "description": "同格 · 与一个或一群有趣的人同行 —— 浙大课表撞课比对，零依赖 Node + 纯前端",
   "scripts": {
     "start": "node server.js",
     "test": "node --test \"test/*.test.js\"",

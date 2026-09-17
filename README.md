@@ -1,4 +1,6 @@
-# 同格 · 找个课搭子一起上课
+# 同格 · 浙大课表撞课比对
+
+> **与一个或一群有趣的人同行**
 
 <p align="center">
   <img src="public/img/mascot/pig-pair.gif" width="200" alt="同格吉祥物：两只凑在一起的小猪">
@@ -365,7 +367,7 @@ docker build -t tongge:1.0 --build-arg INCLUDE_SESSIONS=false .
 #### 启动横幅会说什么
 
 ```
-  同格 · 找个课搭子一起上课
+  同格 · 与一个或一群有趣的人同行
   发起人     DongLanQwQ
   ─────────────────────────────────────────────
   本机访问   http://localhost:3000
@@ -496,7 +498,7 @@ docker run --rm -v tongge-data:/data -v "$PWD:/backup" alpine \
 return {
     owner: 'DongLanQwQ',                       // 发起人昵称，出现在「有问题找谁」的文案与启动横幅里
     appName: '同格',                            // 服务名
-    tagline: '找个课搭子一起上课'                 // 一句话说明
+    tagline: '与一个或一群有趣的人同行'          // 一句话说明（项目的初衷）
 };
 ```
 
