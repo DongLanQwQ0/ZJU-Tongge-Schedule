@@ -85,7 +85,10 @@
             err.status = res.status;
             // 登录/注册自己返回的 401 是「密码不对」，不是「会话过期」——
             // 别让它触发 onUnauthorized，否则会弹一句莫名其妙的「登录状态过期了」
-            var isAuthCall = /^\api\/(login|register)$/.test(path);
+            // 路径是相对的（api/login），所以这里不带前导斜杠。
+            // 注意别写成 /^\api\/…/：\a 是恒等转义（等价于 a），能跑但看着像笔误，
+            // 哪天路径改回 '/api/login' 就会静默失配，401 被误判成「会话过期」。
+            var isAuthCall = /^api\/(login|register)$/.test(path);
             if (res.status === 401 && token && !isAuthCall) {
                 setToken('');
                 if (onUnauthorized) onUnauthorized(err);

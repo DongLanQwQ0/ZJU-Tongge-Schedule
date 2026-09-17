@@ -1420,19 +1420,13 @@
     /**
      * 二维码/链接里该用哪个地址。
      *
+     * 线上（域名或局域网 IP 访问）：直接用当前页面的地址 —— 页面挂在哪个路径下，
+     *   邀请链接就落在哪个路径下，套反向代理的子路径也不会拼错。
      * 自己用 localhost 打开时必须换成局域网地址，否则同学扫了打不开。
      * 服务端返回的 lanUrls 已经排过序（虚拟网卡在后），直接取第一个就行 ——
      * 以前这里还挂了一排「换一个地址试试」的按钮，纯属多余：
      * 正常人就该拿到第一个可用地址，给一排按钮只会让人不知道该点哪个。
      */
-    async function joinOrigin() {
-        if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
-            return location.origin;
-        }
-        var list = await shareCandidates();
-        return list[0] || location.origin;
-    }
-
     async function joinUrl(code) {
         // 正常线上环境
         if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
