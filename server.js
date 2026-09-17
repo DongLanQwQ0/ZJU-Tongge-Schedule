@@ -385,8 +385,8 @@ function resolveVault(options) {
     if (!key) {
         throw new Error([
             '没有配置根密钥 TONGGE_ROOT_KEY，拒绝启动（不允许明文存盘）。',
-            '  生成一把：',
-            '    node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+            '  生成一把（服务器上一般没装 node，用容器版）：',
+            '    docker run --rm node:22-alpine node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
             '  写进**部署目录之外**的文件（例如 /etc/tongge/key.env），',
             '  再由 compose 的 env_file 注入；绝不要和数据卷一起备份。'
         ].join('\n'));
@@ -1292,7 +1292,7 @@ async function runMigrateCli(opts) {
 
     console.log('');
     console.log('  接下来：');
-    console.log('    1. docker compose up -d --build      起服务');
+    console.log('    1. docker compose up -d              起服务（镜像刚才已经 build 过）');
     console.log('    2. 抽查文件里搜不到明文姓名');
     console.log('    3. 确认备份可用后，删掉上面那些明文副本');
     console.log('');

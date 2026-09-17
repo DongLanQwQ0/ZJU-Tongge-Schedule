@@ -147,7 +147,9 @@ T2 挡不住是**信息论限制**，不是实现取舍：服务器必须能解�
 
 ## 8. 密钥保管与运维
 
-- `TONGGE_ROOT_KEY`：32 字节随机（64 hex），`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` 生成
+- `TONGGE_ROOT_KEY`：32 字节随机（64 hex）。服务器上一般没装 node（应用跑在容器里），
+  所以用容器生成：
+  `docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
 - **放在部署目录之外**（例如 `/etc/tongge/key.env`），compose 用 `env_file` 引用；**不进数据卷、不进镜像、不跟数据一起备份、不进版本库**
 - **缺失就拒绝启动**并打印生成命令——绝不允许悄悄退回"无加密"模式
 - **启动自检（fail-fast）**：拿根密钥试解一条已有密文（例如任一昵称）。解不开说明密钥不对或数据被换过——**立刻拒绝启动**，而不是带着错密钥跑起来把后续写入的数据一起弄坏
@@ -203,7 +205,8 @@ docker run --rm -v tongge-data:/data -v "$PWD:/backup" alpine \
   tar czf /backup/tongge-$(date +%Y%m%d-%H%M).tar.gz -C /data .
 
 # 1. 生成根密钥，放到部署目录之外 —— 绝不能和数据放一起、也绝不能进备份
-KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+# 服务器上一般没装 node（应用跑在容器里），所以用容器生成一把
+KEY=$(docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
 sudo install -d -m 700 /etc/tongge
 printf 'TONGGE_ROOT_KEY=%s\n' "$KEY" | sudo tee /etc/tongge/key.env >/dev/null
 sudo chmod 600 /etc/tongge/key.env

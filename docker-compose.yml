@@ -20,11 +20,13 @@ services:
     # 为什么不能直接写在 environment: 里 —— 那样密钥就躺在 /opt/tongge，
     # 一旦这个目录被打包/备份/复制走，加密就等于没做。
     #
-    # 生成一把：
-    #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+    # 生成一把（服务器上一般没装 node，用容器版）：
+    #   docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
     # 写进文件（权限 600）：
+    #   KEY=$(docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
     #   sudo install -d -m 700 /etc/tongge
-    #   printf 'TONGGE_ROOT_KEY=%s\n' "<上面那串>" | sudo tee /etc/tongge/key.env >/dev/null
+    #   printf 'TONGGE_ROOT_KEY=%s\n' "$KEY" | sudo tee /etc/tongge/key.env >/dev/null
+    #   sudo chmod 600 /etc/tongge/key.env
     #
     # 注意：这个文件不存在时 compose 会直接报错，服务也拒绝启动 ——
     # 那是有意的：绝不允许悄悄退化成明文存盘。

@@ -90,7 +90,8 @@
 （放在 `/opt/tongge` 里就等于和数据一起被拷走，加密白做）：
 
 ```bash
-KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+# 服务器上一般没装 node（应用跑在容器里），所以用容器生成一把
+KEY=$(docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
 sudo install -d -m 700 /etc/tongge
 printf 'TONGGE_ROOT_KEY=%s\n' "$KEY" | sudo tee /etc/tongge/key.env >/dev/null
 sudo chmod 600 /etc/tongge/key.env
@@ -445,7 +446,10 @@ docker run --rm -v tongge-data:/data -v "$PWD:/backup" alpine \
   tar czf /backup/tongge-$(date +%Y%m%d-%H%M).tar.gz -C /data .
 
 # 1. 根密钥（首次才需要；已经有 /etc/tongge/key.env 就跳过）
-KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+#    ⚠️ 必须先做这一步：compose 里的 env_file 指向它，文件不存在时
+#    连 docker compose stop 都会因为"env file not found"直接报错
+# 服务器上一般没装 node（应用跑在容器里），所以用容器生成一把
+KEY=$(docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
 sudo install -d -m 700 /etc/tongge
 printf 'TONGGE_ROOT_KEY=%s\n' "$KEY" | sudo tee /etc/tongge/key.env >/dev/null
 sudo chmod 600 /etc/tongge/key.env
@@ -457,24 +461,32 @@ cd /opt/tongge && git pull
 #    任何一次写入都会把迁移结果覆盖回明文
 docker compose stop
 
-# 4. 迁移（CLI 模式，不启 HTTP；缺根密钥会直接报错）
+# 4. 先构建新镜像 —— 也不能省。`docker compose run` 用的是**镜像里**的代码：
+#    不先构建，跑的还是旧代码，它不认识 --migrate-vault，会当成普通启动把
+#    服务跑起来（表现为"卡住不动，只打印横幅"）
+docker compose build
+
+# 5. 迁移（CLI 模式，不启 HTTP；缺根密钥会直接报错）
 docker compose run --rm tongge node server.js --migrate-vault --super DongLan
 
-# 5. 起服务
-docker compose up -d --build
+# 6. 起服务（镜像已是新的，不必再加 --build）
+docker compose up -d
 
-# 6. 抽查：卷里搜不到任何备注原文（引号里换成你自己知道的一条）
+# 7. 抽查：卷里搜不到任何备注原文（引号里换成你自己知道的一条）
 docker run --rm -v tongge-data:/data alpine \
   grep -rl "某条备注原文" /data || echo "文件里已无该明文 ✓"
 
-# 7. 确认备份可用后，删掉迁移留下的明文副本
+# 8. 确认备份可用后，删掉迁移留下的明文副本
 docker run --rm -v tongge-data:/data alpine sh -c 'rm -f /data/*.plaintext-*'
 ```
 
 迁移是**幂等**的，重复跑不会重复加密；服务启动时若发现还有明文，会**拒绝启动**并提示
-跑上面第 4 步——免得"一半明文一半密文"的状态悄悄上线。
+跑上面第 5 步——免得"一半明文一半密文"的状态悄悄上线。
 
 会话令牌也在这次升级里换成了 sha256 落盘（`sessions.json` 的键），**同学不需要重新登录**。
+
+> 备份 tar 里是**迁移前的明文**（含姓名与备注）。要么把它放在受控位置（`chmod 600`），
+> 要么确认无误后删掉——别随手丢在共享目录里。
 
 ---
 
