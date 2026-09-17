@@ -881,6 +881,55 @@ test('群组页：邀请码、二维码、周次胶囊都渲染出来', async ()
     assert.equal(a.el('#btn-group-delete').hidden, false, '群主看得见解散');
 });
 
+test('顶栏「更多」菜单：点 ⋯ 展开、选完一项收起', async () => {
+    const u = await user();
+    const a = await started(base, { token: u.token });
+
+    assert.equal(a.el('#more-menu').hidden, true, '默认应当是收起的');
+    a.click('#btn-more');
+    assert.equal(a.el('#more-menu').hidden, false, '点 ⋯ 应当展开');
+    assert.equal(a.el('#btn-more').getAttribute('aria-expanded'), 'true');
+
+    a.click('#btn-theme');                       // 点菜单里的主题那一项
+    assert.equal(a.el('#more-menu').hidden, true, '选完一项就收起');
+    assert.equal(a.el('#btn-more').getAttribute('aria-expanded'), 'false');
+});
+
+test('移除成员：确认按钮要按两次才真的移除', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '要移除的群' } });
+    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+
+    const removeBtn = a.all('#group-members .row-remove')[0];
+    assert.ok(removeBtn, '群主应当看得到移除按钮');
+    a.click(removeBtn);
+    await tick(50);
+
+    // 注意别用「第一个可见的 .modal」—— 首次打开还会弹「内测提示」，它也是 .modal
+    const modal = a.doc.querySelectorAll('.modal')
+        .filter((m) => !m.hidden && m.querySelector('[data-x="ok"]'))[0];
+    assert.ok(modal, '应当弹出确认框');
+    const ok = modal.querySelector('[data-x="ok"]');
+    assert.equal(ok.textContent, '确认移除');
+
+    a.click(ok);                                  // 第一下：只是上膛
+    await tick(80);
+    assert.equal(ok.textContent, '再点一次，真的移除', '第一下之后要换文案，提示还要再点一次');
+    assert.ok(!modal._classes.has('closing'), '第一下不该关掉弹窗');
+    let detail = await raw(`/api/groups/${g.body.code}`, { token: owner.token });
+    assert.ok(detail.body.members.some((m) => m.id === mate.id), '第一下不该真把人移出去');
+
+    a.click(ok);                                  // 第二下：才真的移除
+    await tick(250);
+    detail = await raw(`/api/groups/${g.body.code}`, { token: owner.token });
+    assert.ok(!detail.body.members.some((m) => m.id === mate.id), '第二下才真的移出');
+});
+
 test('求 Star 的入口：顶栏第一次出现时是展开的', async () => {
     const u = await user();
     const a = await started(base, { token: u.token });

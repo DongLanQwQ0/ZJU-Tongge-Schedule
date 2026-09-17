@@ -29,9 +29,14 @@
     <a class="icon-btn star-btn" id="btn-star" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule" target="_blank" rel="noopener noreferrer" title="去 GitHub 点个 Star ⭐"><span aria-hidden="true">⭐</span><span class="star-text">求个 Star 🥺</span></a>
     <h1 id="topbar-title">同格</h1>
     <span class="who" id="topbar-who"></span>
-    <button class="icon-btn" id="btn-admin" title="管理" hidden>🛠</button>
-    <button class="icon-btn" id="btn-theme" title="切换深色 / 浅色">🌙</button>
-    <button class="icon-btn" id="btn-logout" title="退出登录">⎋</button>
+    <!-- 「管理 / 主题 / 退出」原来是三颗并排的小圆点，手机上又挤又容易点错，
+         现在收进一个「更多」菜单：点 ⋯ 展开，选完一项 / 点别处 / 按 Esc 都收起 -->
+    <button class="icon-btn" id="btn-more" title="更多" aria-label="更多" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><circle cx="5.5" cy="12" r="1.9" fill="currentColor"/><circle cx="12" cy="12" r="1.9" fill="currentColor"/><circle cx="18.5" cy="12" r="1.9" fill="currentColor"/></svg></button>
+    <div class="more-menu" id="more-menu" hidden>
+        <button class="menu-item" id="btn-theme"><span class="menu-ico" id="theme-icon">🌙</span>切换深色 / 浅色</button>
+        <button class="menu-item" id="btn-admin" hidden><span class="menu-ico">🛠</span>管理</button>
+        <button class="menu-item danger" id="btn-logout"><span class="menu-ico">⎋</span>退出登录</button>
+    </div>
 </header>
 
 <main>

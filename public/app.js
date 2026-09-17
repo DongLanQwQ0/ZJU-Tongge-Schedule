@@ -148,7 +148,14 @@
         });
     }
 
-    function askConfirm(title, message, okText) {
+    /**
+     * 一个「确定 / 取消」的确认框。
+     *
+     * @param opts.doubleConfirm 传文案时启用「按两次」：第一下只是上膛（按钮变红、文案换掉），
+     *        第二下才真的执行。用在不可逆的操作上（比如把人移出群组），防误触。
+     */
+    function askConfirm(title, message, okText, opts) {
+        opts = opts || {};
         return new Promise(function (resolve) {
             var modal = document.createElement('div');
             modal.className = 'modal';
@@ -162,11 +169,21 @@
                 '</div></div>';
             $('h2', modal).textContent = title;
             $('p', modal).textContent = message;
-            $('[data-x=ok]', modal).textContent = okText || '确定';
+            var okBtn = $('[data-x=ok]', modal);
+            okBtn.textContent = okText || '确定';
+            var armed = !opts.doubleConfirm;      // 不需要按两次的，一上来就是「已上膛」
             modal.addEventListener('click', function (e) {
                 var x = e.target.getAttribute && e.target.getAttribute('data-x');
-                if (x === 'cancel') { dismiss(modal); resolve(false); }
-                if (x === 'ok') { dismiss(modal); resolve(true); }
+                if (x === 'cancel') { dismiss(modal); resolve(false); return; }
+                if (x !== 'ok') return;
+                if (!armed) {
+                    armed = true;
+                    okBtn.textContent = opts.doubleConfirm;
+                    okBtn.classList.add('armed');
+                    return;
+                }
+                dismiss(modal);
+                resolve(true);
             });
             document.body.appendChild(modal);
         });
@@ -1149,8 +1166,11 @@
             '<div class="sub">' + (np.real ? esc(np.real) + ' · ' : '') +
             m.courseCount + ' 个时段 · ' + fmtTime(m.updatedAt) + '</div>' +
             extra + '</div>' +
+            // 备注 / 移除 竖着排：横排时两颗紧挨着，手指点在交界处很容易点错
+            '<div class="row-acts">' +
             '<button class="row-note" data-note="' + esc(m.id) + '">备注</button>' +
             (canRemove ? '<button class="row-remove" data-remove="' + esc(m.id) + '">移除</button>' : '') +
+            '</div>' +
             '<span class="chev">›</span></div>';
     }
 
@@ -1402,7 +1422,8 @@
             '移除成员',
             '把「' + m.nickname + '」移出「' + state.group.name + '」？TA 会从成员列表里消失，' +
             '要重新输邀请码才能进群。',
-            '确认移除'
+            '确认移除',
+            { doubleConfirm: '再点一次，真的移除' }   // 不可逆，所以要按两次
         );
         if (!ok) return;
         try {
@@ -2336,7 +2357,7 @@
         // 手机浏览器的地址栏颜色跟着走
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', t === 'dark' ? '#000000' : '#f2f2f7');
-        $('#btn-theme').textContent = t === 'dark' ? '☀️' : '🌙';
+        $('#theme-icon').textContent = t === 'dark' ? '☀️' : '🌙';
     }
 
     function initTheme() {
@@ -2375,6 +2396,35 @@
         $('#beta-close').addEventListener('click', function () { closeModal($('#beta-modal')); });
     }
 
+    /**
+     * 顶栏「更多」菜单：管理 / 主题 / 退出都收在这里。
+     *
+     * 选完一项、点别处、按 Esc 都收起 —— 手机上留个浮层在那儿会挡住下面的内容。
+     * 判断「点别处」用 closest 而不是 stopPropagation：后者会把顶栏其它按钮一起堵掉。
+     */
+    function initMoreMenu() {
+        var btn = $('#btn-more');
+        var menu = $('#more-menu');
+        if (!btn || !menu) return;
+
+        function setOpen(open) {
+            menu.hidden = !open;
+            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+        btn.addEventListener('click', function () { setOpen(menu.hidden); });
+        // 菜单里任何一项点下去都收起（主题、管理、退出都一样）
+        menu.addEventListener('click', function () { setOpen(false); });
+        document.addEventListener('click', function (e) {
+            if (menu.hidden) return;
+            var t = e.target;
+            if (t && t.closest && (t.closest('#more-menu') || t.closest('#btn-more'))) return;
+            setOpen(false);
+        });
+        window.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && !menu.hidden) setOpen(false);
+        });
+    }
+
     async function boot() {
         initAuth();
         initHome();
@@ -2383,6 +2433,7 @@
         initCompare();
         bindGlobal();
         initTheme();
+        initMoreMenu();
         initBeta();
         initHistory();
 

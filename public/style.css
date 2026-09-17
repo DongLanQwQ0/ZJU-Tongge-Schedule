@@ -177,7 +177,37 @@ a.icon-btn { text-decoration: none; }
 /* 系统设了「减少动态效果」就别做展开动画，但说明照样显示 */
 @media (prefers-reduced-motion: reduce) {
     .icon-btn.star-btn, .icon-btn.star-btn .star-text { transition: none; }
+    .more-menu { animation: none; }
 }
+
+/* ------------------------------------------------- 顶栏「更多」菜单
+   管理 / 主题 / 退出原来是三颗并排的小圆点，手机上又挤又容易点错，现在收进这块面板。
+   .topbar 是 sticky（本身就是定位元素），所以这里 absolute 就够，不用再包一层。 */
+.more-menu {
+    position: absolute; right: 12px; top: calc(100% - 4px); z-index: 60;
+    min-width: 168px; padding: 6px;
+    display: flex; flex-direction: column; gap: 2px;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: 0 10px 28px var(--shadow-strong);
+    /* 从右上角「长出来」：位移 + 缩一起用，比单纯淡入更像浮层 */
+    transform-origin: top right;
+    animation: menu-pop .16s ease-out;
+}
+@keyframes menu-pop {
+    from { opacity: 0; transform: translateY(-6px) scale(.94); }
+    to { opacity: 1; transform: none; }
+}
+.menu-item {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    padding: 9px 10px; border-radius: 8px;
+    font-size: 13px; text-align: left; color: var(--text);
+}
+.menu-item:active { background: var(--fill-active); }
+.menu-item.danger { color: var(--c-cross); }
+.menu-ico { width: 18px; text-align: center; }
+
+/* 危险操作的「第二下」：上膛后按钮变红，让人一眼看出这次点下去就真删了 */
+.btn.armed { background: var(--c-cross); }
 
 /* ------------------------------------------------------------ 布局 */
 
@@ -299,6 +329,11 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
     padding: 6px 10px; border-radius: 9px;
 }
 .row-remove:active { background: rgba(255, 59, 48, .2); }
+
+/* 成员行右侧：备注 / 移除 改成竖着排，并收小一号 ——
+   横排时两颗紧挨着，手指点在交界处很容易点错。 */
+.row-acts { flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; }
+.row-acts .row-note, .row-acts .row-remove { font-size: 11px; padding: 4px 9px; border-radius: 8px; }
 
 /* 重合课时徽章 */
 .overlap { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
