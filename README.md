@@ -14,6 +14,8 @@
 
 零 npm 依赖 · `docker compose up -d --build` 一条命令部署 · 课表原始文件不出浏览器
 
+🏠 仓库：**[github.com/DongLanQwQ0/ZJU-Tongge-Schedule](https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule)** ← 觉得还行的话，点进去给个 ⭐ 呗
+
 ---
 
 ## 目录
@@ -34,6 +36,7 @@
 - [目录结构](#目录结构)
 - [版本管理与推送](#版本管理与推送)
 - [后续规划](#后续规划)
+- [求个 Star](#求个-star)
 
 ---
 
@@ -681,3 +684,22 @@ git push -u origin main
 > 第 6 项要注意：现在的可见范围是「同群成员」，本质上是熟人网络。
 > **一旦开放陌生人匹配，就从「熟人可见」变成「陌生人可见」**，
 > 而课表里含真实姓名、每周行踪、常去的楼栋教室。这条上线前应当单独做一次评审。
+
+---
+
+## 求个 Star
+
+这项目是一个人、一台服务器慢慢磨出来的：零 npm 依赖、课表在浏览器里解析、
+部署压缩到三条命令，连个正经前端框架都没用。
+
+如果它帮你找到过课搭子——或者你只是觉得页脚那两只小猪可爱 🐷——
+麻烦去仓库点一下 **Star**：
+
+<p align="center">
+  <a href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule">
+    <b>👉 github.com/DongLanQwQ0/ZJU-Tongge-Schedule ⭐</b>
+  </a>
+</p>
+
+Star 不能让服务器变快，但能让作者开心一整天 (๑•̀ㅂ•́)و✧
+有问题、想要什么新功能，也欢迎开 Issue 说一声。

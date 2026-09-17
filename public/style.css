@@ -439,6 +439,9 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .foot-sub + .foot-sub { margin-top: 2px; }
 .foot-sub s { opacity: .75; }
 .foot-copig { color: var(--pink); font-weight: 700; }
+/* 页脚唯一的外链：得看得出能点，所以给粉色 + 悬停下划线 */
+.foot-star { color: var(--pink); font-weight: 600; text-decoration: none; }
+.foot-star:hover { text-decoration: underline; }
 .foot-mascot { max-height: clamp(38px, 12vw, 52px); max-width: 100%; opacity: .85; }
 /* 整张铺满、没透明背景的那种（深炸梗图）：圆角当贴纸，别像块贴歪的方块。
    有透明通道的图四角本来就什么都没有，加了也不影响。 */
