@@ -83,6 +83,8 @@
         if (!res.ok) {
             var err = new Error((data && data.error) || ('请求失败（' + res.status + '）'));
             err.status = res.status;
+            // 服务端说「这次开始要验证码了」，把标志带上去给 app.js 显示输入框
+            if (data && data.captchaRequired) err.captchaRequired = true;
             // 登录/注册自己返回的 401 是「密码不对」，不是「会话过期」——
             // 别让它触发 onUnauthorized，否则会弹一句莫名其妙的「登录状态过期了」
             // 路径是相对的（api/login），所以这里不带前导斜杠。
@@ -113,8 +115,10 @@
             if (box) { body.captchaId = box.id; body.captchaAnswer = box.answer; }
             return request('api/register', 'POST', body);
         },
-        login: function (nickname, password) {
-            return request('api/login', 'POST', { nickname: nickname, password: password });
+        login: function (nickname, password, box) {
+            var body = { nickname: nickname, password: password };
+            if (box) { body.captchaId = box.id; body.captchaAnswer = box.answer; }
+            return request('api/login', 'POST', body);
         },
         logout: function () { return request('api/logout', 'POST', {}); },
         me: function () { return request('api/me'); },

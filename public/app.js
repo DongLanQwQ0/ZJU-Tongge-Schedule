@@ -389,9 +389,15 @@
     // 注册验证码：服务端出一道四则运算并画成 PNG，前端只负责显示和「换一张」
     var captchaOn = false;
     var captchaId = '';
+    // 登录什么时候开始要验证码由服务端定（同一个昵称连错两次），这里只跟着它的标志走
+    var loginCaptchaNeeded = false;
+
+    /** 这一格该不该出现：注册一定要；登录则看服务端有没有判「要验证码」 */
+    function captchaVisible() {
+        return captchaOn && (authMode === 'register' || loginCaptchaNeeded);
+    }
 
     async function refreshCaptcha() {
-        var field = $('#auth-captcha-field');
         var img = $('#auth-captcha-img');
         try {
             var r = await API.captcha();
@@ -399,11 +405,14 @@
             captchaId = r.id || '';
             if (captchaOn && r.image) img.src = r.image;
         } catch (e) {
-            // 出题接口都挂了就别拿它拦着人注册；真需要拦，服务端会自己回 400
+            // 出题接口都挂了就别拿它拦着人登录/注册；真需要拦，服务端会自己回 400
             captchaOn = false;
             captchaId = '';
         }
-        field.hidden = !(authMode === 'register' && captchaOn);
+        $('#auth-captcha-field').hidden = !captchaVisible();
+        $('#auth-captcha-label').textContent = authMode === 'register'
+            ? '验证码 · 算一算图里的式子'
+            : '验证码 · 密码连错两次了，算一算再试';
         $('#auth-captcha').value = '';
     }
 
@@ -416,8 +425,8 @@
             var isReg = authMode === 'register';
             $('#auth-confirm-field').hidden = !isReg;
             $('#auth-tip').hidden = !isReg;
-            // 切到注册才去取题；切回登录就把这一格收起来
-            if (isReg) refreshCaptcha();
+            // 切到注册一定要题；切回登录时，如果之前被判过「要验证码」就留着
+            if (isReg || loginCaptchaNeeded) refreshCaptcha();
             else $('#auth-captcha-field').hidden = true;
             $('#auth-submit').textContent = isReg ? '注册并登录' : '登录';
             $('#auth-password').setAttribute('autocomplete', isReg ? 'new-password' : 'current-password');
@@ -469,7 +478,7 @@
             confirmEl.focus();
             return authError('两次输入的密码不一样');
         }
-        if (isReg && captchaOn && !$('#auth-captcha').value.trim()) {
+        if (captchaVisible() && !$('#auth-captcha').value.trim()) {
             $('#auth-captcha').classList.add('invalid');
             $('#auth-captcha').focus();
             return authError('把图里的算式算出来填上');
@@ -478,12 +487,14 @@
         btn.disabled = true;
         btn.textContent = isReg ? '注册中…' : '登录中…';
         try {
+            var box = captchaVisible()
+                ? { id: captchaId, answer: $('#auth-captcha').value.trim() }
+                : null;
             var r = isReg
-                ? await API.register(nickname, password, captchaOn
-                    ? { id: captchaId, answer: $('#auth-captcha').value.trim() }
-                    : null)
-                : await API.login(nickname, password);
+                ? await API.register(nickname, password, box)
+                : await API.login(nickname, password, box);
             API.setToken(r.token);
+            loginCaptchaNeeded = false;          // 登进去了，连错计数也就清了
             state.me = await API.me();
             toast(isReg ? '注册成功，欢迎！' : '欢迎回来，' + state.me.nickname);
             await goHome({ replace: true });   // 登录页不该能后退回去
@@ -493,9 +504,10 @@
                 await joinByCode(code);
             }
         } catch (e) {
-            // 验证码是一次性的：注册失败（不管是不是验证码错）都换一张，
-            // 免得让人对着同一道用过的题反复试
-            if (isReg) await refreshCaptcha();
+            // 服务端判「下次要带验证码」就把它显示出来；刷新过页面、本地没状态时它会直接回 400
+            if (e.captchaRequired || (!isReg && e.status === 400)) loginCaptchaNeeded = true;
+            // 验证码是一次性的：只要它露在界面上，失败之后就换一张
+            if (captchaVisible()) await refreshCaptcha();
             // 具体原因留在表单里（toast 三秒就没了，容易错过）
             authError(e.message);
             toast(e.message, true);

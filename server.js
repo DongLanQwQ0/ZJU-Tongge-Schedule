@@ -40,6 +40,9 @@ const MAX_BODY = 1024 * 1024;          // 1 MB
 const MAX_DRAIN = 4 * MAX_BODY;
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCK_MS = 60 * 1000;
+// 同一个昵称连错这么多次之后，登录要过一道验证码（密码连错两次是很正常的手滑，
+// 再往后就该怀疑是脚本在换着密码试了）
+const LOGIN_CAPTCHA_AFTER = 2;
 
 const MIME = {
     '.html': 'text/html; charset=utf-8',
@@ -100,8 +103,8 @@ function tooLarge() {
  *     那些原文会把 errno 甚至你电脑上的绝对路径念给攻击者听。
  *     细节只留在服务端日志里。
  */
-function sendDenial(res, status, message, extraHeaders) {
-    const body = JSON.stringify({ error: message });
+function sendDenial(res, status, message, extraHeaders, extraBody) {
+    const body = JSON.stringify(Object.assign({ error: message }, extraBody || {}));
     res.writeHead(status, Object.assign({
         'Content-Type': 'application/json; charset=utf-8',
         'Content-Length': Buffer.byteLength(body),
@@ -120,8 +123,8 @@ function send(res, status, payload) {
     res.end(body);
 }
 
-function sendError(res, status, message) {
-    sendDenial(res, status, message);
+function sendError(res, status, message, extraBody) {
+    sendDenial(res, status, message, null, extraBody);
 }
 
 /**
@@ -331,6 +334,11 @@ async function createServer(options = {}) {
             throw fail(429, '试得太频繁了，等一分钟再试');
         }
     }
+    /** 这个昵称当前连错了几次（没记录就是 0 次） */
+    function failCount(key) {
+        const rec = loginFails.get(key);
+        return rec ? rec.fails : 0;
+    }
     function noteFail(key) {
         const rec = loginFails.get(key) || { fails: 0, until: 0 };
         rec.fails += 1;
@@ -417,11 +425,20 @@ async function createServer(options = {}) {
             const key = throttleKey(body.nickname);
             const ip = clientIp(req);
             checkThrottle(key);
+            // 连错两次之后，登录也得先过验证码 —— 挡的是「换着密码试同一个号」的脚本。
+            // 注意这一步在核对密码**之前**：带着旧密码蒙对的人也得先算题。
+            if (captchaOn && failCount(key) >= LOGIN_CAPTCHA_AFTER
+                && !takeCaptcha(body.captchaId, body.captchaAnswer)) {
+                throw fail(400, '密码连错两次了，先把图里的算式算出来');
+            }
             const user = await store.verifyLogin(body.nickname, body.password);
             if (!user) {
                 noteFail(key);
                 limiter.loginFail.check(ip);   // 按 IP 再兜一层，防换昵称刷
-                throw fail(401, '昵称或密码不对');
+                // 顺带告诉前端「下一次要带验证码」，它好把那一格显示出来
+                const needCaptcha = captchaOn && failCount(key) >= LOGIN_CAPTCHA_AFTER;
+                throw Object.assign(fail(401, '昵称或密码不对'),
+                    needCaptcha ? { extra: { captchaRequired: true } } : {});
             }
             clearFail(key);
             await store.noteLogin(user.id, ip);
@@ -916,7 +933,7 @@ async function createServer(options = {}) {
                 // 只有我们自己造的（带 status）才把文案透出去；
                 // 其余是 fs / 运行时抛的原文，里头可能有 errno 甚至绝对路径。
                 const msg = (e && e.status) ? e.message : '服务器内部错误';
-                return sendError(res, status, msg);
+                return sendError(res, status, msg, e && e.extra);
             }
         }
         return sendError(res, 404, '接口不存在');

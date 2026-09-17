@@ -201,6 +201,72 @@ test('瞎编的 id 一律挡掉', async () => {
     assert.equal(r.status, 400);
 });
 
+test('登录：同一个昵称连错两次之后，登录必须带验证码', async () => {
+    const q0 = await api('/api/captcha');
+    const reg = await api('/api/register', {
+        method: 'POST',
+        body: { nickname: '连错哥', password: 'pw123456', captchaId: q0.body.id, captchaAnswer: '3' }
+    });
+    assert.equal(reg.status, 200);
+
+    const bad1 = await api('/api/login', { method: 'POST', body: { nickname: '连错哥', password: '不是密码' } });
+    assert.equal(bad1.status, 401);
+    assert.ok(!bad1.body.captchaRequired, '第一次错还不该要验证码');
+
+    const bad2 = await api('/api/login', { method: 'POST', body: { nickname: '连错哥', password: '还不是' } });
+    assert.equal(bad2.status, 401);
+    assert.equal(bad2.body.captchaRequired, true, '第二次错之后要告诉前端「下次带验证码」');
+
+    // 第三次：密码是对的，但没带验证码 —— 照样得先算题
+    const noBox = await api('/api/login', { method: 'POST', body: { nickname: '连错哥', password: 'pw123456' } });
+    assert.equal(noBox.status, 400);
+    assert.match(noBox.body.error, /算式/);
+
+    // 带上验证码（这个服务里题目固定是 1+1+1=3）就放行
+    const q = await api('/api/captcha');
+    const ok = await api('/api/login', {
+        method: 'POST',
+        body: { nickname: '连错哥', password: 'pw123456', captchaId: q.body.id, captchaAnswer: '3' }
+    });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.ok(ok.body.token);
+});
+
+test('登录：验证码填错不放行，而且那一张会作废', async () => {
+    const q0 = await api('/api/captcha');
+    await api('/api/register', {
+        method: 'POST',
+        body: { nickname: '再连错', password: 'pw123456', captchaId: q0.body.id, captchaAnswer: '3' }
+    });
+    for (const pw of ['错一', '错二']) {
+        await api('/api/login', { method: 'POST', body: { nickname: '再连错', password: pw } });
+    }
+
+    const q = await api('/api/captcha');
+    const wrong = await api('/api/login', {
+        method: 'POST',
+        body: { nickname: '再连错', password: 'pw123456', captchaId: q.body.id, captchaAnswer: '7' }
+    });
+    assert.equal(wrong.status, 400);
+
+    // 同一个 id 再用一次（这回答案是对的）也不认 —— 一次性核销
+    const reuse = await api('/api/login', {
+        method: 'POST',
+        body: { nickname: '再连错', password: 'pw123456', captchaId: q.body.id, captchaAnswer: '3' }
+    });
+    assert.equal(reuse.status, 400, '用过的验证码不该还能用');
+});
+
+test('登录：没连错过的账号不该平白多一道题', async () => {
+    const q0 = await api('/api/captcha');
+    await api('/api/register', {
+        method: 'POST',
+        body: { nickname: '一次就中', password: 'pw123456', captchaId: q0.body.id, captchaAnswer: '3' }
+    });
+    const ok = await api('/api/login', { method: 'POST', body: { nickname: '一次就中', password: 'pw123456' } });
+    assert.equal(ok.status, 200, '一次就对的不该被要验证码');
+});
+
 test('关掉验证码时（captcha:false）：接口要说实话，注册也不再要它', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-captcha-off-'));
     const off = await createServer({
