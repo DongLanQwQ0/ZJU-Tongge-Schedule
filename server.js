@@ -17,6 +17,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
+const net = require('node:net');
 const crypto = require('node:crypto');
 const captcha = require('./shared/captcha.js');
 const vaultLib = require('./shared/vault.js');
@@ -257,9 +258,106 @@ function createLimiter({ windowMs, max, message }) {
     };
 }
 
-function clientIp(req) {
-    // 本服务直接对外，不经过反向代理，所以 socket 地址就是真实来源
-    return String((req.socket && req.socket.remoteAddress) || 'unknown');
+// ---------------------------------------------------------------- 真实来源 IP
+
+/**
+ * 默认信任的"上游"网段。
+ *
+ * 为什么需要这份清单：站点在反向代理后面时，`socket.remoteAddress` 拿到的是
+ * 反代/网桥网关的地址 —— 于是**所有请求共用一个限流桶**，一个人的 9 次注册尝试
+ * 就能把全站的注册额度吃光（登录失败限流同理，可以直接把全站锁在门外）。
+ *
+ * 真实来源只能从 `X-Forwarded-For` 里取，而那个头**是客户端可以自己填的**：
+ * 只要直连方不可信就绝不能看它，否则攻击者写一个 `X-Forwarded-For: 1.2.3.4`
+ * 就绕过了所有限流。
+ *
+ * 默认值覆盖"本机 + 容器网段"（Docker 里反代连进来时，容器看到的源地址是网桥网关）。
+ * ⚠️ 如果这个端口还对局域网开放、或同网段跑着不受信任的容器，必须用
+ * `TONGGE_TRUSTED_PROXIES` 收窄（写 `none` 就是一个都不信）。
+ */
+const DEFAULT_TRUSTED_PROXIES = [
+    ['127.0.0.0', 8, 'ipv4'], ['10.0.0.0', 8, 'ipv4'], ['172.16.0.0', 12, 'ipv4'],
+    ['192.168.0.0', 16, 'ipv4'], ['100.64.0.0', 10, 'ipv4'], ['169.254.0.0', 16, 'ipv4'],
+    ['::1', 128, 'ipv6'], ['fc00::', 7, 'ipv6'], ['fe80::', 10, 'ipv6']
+];
+
+/** `::ffff:172.17.0.1` → `172.17.0.1`。Node 在双栈 socket 上就是这么给 IPv4 的 */
+function normalizeIp(addr) {
+    const s = String(addr == null ? '' : addr).trim();
+    const m = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(s);
+    return m ? m[1] : s;
+}
+
+const ipFamily = (addr) => (normalizeIp(addr).includes(':') ? 'ipv6' : 'ipv4');
+
+/**
+ * 解析可信反代清单：`"127.0.0.1,10.0.0.0/8,::1"`，或 `none`（谁都不信）。
+ *
+ * 传空/不传就用默认网段。**非法值直接抛**：配置写错了要立刻看得见，
+ * 而不是悄悄退化成"谁都不信"或"谁都信"。
+ */
+function parseTrustedProxies(raw) {
+    const list = new net.BlockList();
+    let count = 0;
+    const add = (addr, prefix, family) => {
+        list.addSubnet(addr, prefix, family);
+        count += 1;
+    };
+
+    const spec = raw == null ? '' : String(raw).trim();
+    if (spec === '') {
+        DEFAULT_TRUSTED_PROXIES.forEach(([a, p, f]) => add(a, p, f));
+        return { list, count, configured: false };
+    }
+    if (/^(none|off|false|0)$/i.test(spec)) return { list, count: 0, configured: true };
+
+    spec.split(',').map((s) => s.trim()).filter(Boolean).forEach((item) => {
+        const [addr, prefix] = item.split('/');
+        const ver = net.isIP(addr);
+        if (!ver) throw new Error(`TONGGE_TRUSTED_PROXIES 里不是合法 IP：${item}`);
+        const family = ver === 6 ? 'ipv6' : 'ipv4';
+        const bits = prefix === undefined ? (ver === 6 ? 128 : 32) : Number(prefix);
+        if (!Number.isInteger(bits) || bits < 0 || bits > (ver === 6 ? 128 : 32)) {
+            throw new Error(`TONGGE_TRUSTED_PROXIES 里的前缀长度不合法：${item}`);
+        }
+        add(addr, bits, family);
+    });
+    return { list, count, configured: true };
+}
+
+function isTrustedIp(addr, trusted) {
+    const ip = normalizeIp(addr);
+    if (!ip || !trusted || !trusted.list || net.isIP(ip) === 0) return false;
+    try {
+        return trusted.list.check(ip, ipFamily(ip));
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * 取真实来源 IP。规则只有一条：**只有直连方可信时，才看那些转发头**。
+ *
+ * 可信时从 `X-Forwarded-For` **从右往左**找第一个不可信的地址 —— 最左边那个
+ * 是客户端自己填的（中间有多少层代理就会追加多少段），认它等于认攻击者写的值。
+ * 整条链都是可信代理、或压根没有这个头，就退到 `X-Real-IP`，再不行只能认直连方。
+ */
+function resolveClientIp(req, trusted) {
+    const peer = normalizeIp(req.socket && req.socket.remoteAddress) || 'unknown';
+    if (!isTrustedIp(peer, trusted)) return peer;
+
+    const chain = String(req.headers['x-forwarded-for'] || '')
+        .split(',')
+        .map((s) => normalizeIp(s))
+        .filter((s) => s && net.isIP(s) !== 0);
+    for (let i = chain.length - 1; i >= 0; i--) {
+        if (!isTrustedIp(chain[i], trusted)) return chain[i];
+    }
+
+    const real = normalizeIp(req.headers['x-real-ip']);
+    if (real && net.isIP(real) !== 0 && !isTrustedIp(real, trusted)) return real;
+
+    return peer;
 }
 
 // ---------------------------------------------------------------- 服务
@@ -299,6 +397,15 @@ function resolveVault(options) {
 async function createServer(options = {}) {
     const port = options.port || Number(process.env.PORT) || 3000;
     const vault = resolveVault(options);
+
+    // 限流要按"真实来源"分桶：只有直连方可信时才采信 X-Forwarded-For。
+    // 这个局部 const 会遮蔽模块级的解析函数（同名只是巧合，见上面的说明），
+    // 于是本函数里所有路由都自动用上真实 IP —— 十几处调用点一个都不用改。
+    const trusted = parseTrustedProxies(
+        options.trustedProxies !== undefined ? options.trustedProxies : process.env.TONGGE_TRUSTED_PROXIES
+    );
+    const clientIp = (req) => resolveClientIp(req, trusted);
+
     const store = createStore(options.dataDir || DATA, { vault });
 
     try {
@@ -1075,6 +1182,7 @@ async function createServer(options = {}) {
     server.port = port;
     server.encrypted = !!vault;
     server.superCount = superCount;
+    server.trustedProxies = trusted;
     return server;
 }
 
@@ -1236,6 +1344,10 @@ async function main() {
         console.log('  ─────────────────────────────────────────────');
         console.log(`  本机访问   http://localhost:${server.port}`);
         console.log(`  存储加密   ${server.encrypted ? '已开启（TONGGE_ROOT_KEY）' : '⚠ 未开启（只应出现在测试里）'}`);
+        const tp = server.trustedProxies;
+        console.log(`  限流依据   ${tp.count === 0
+            ? '直连地址（不信任任何转发头）'
+            : `真实 IP（可信网段 ${tp.count} 个${tp.configured ? '，来自 TONGGE_TRUSTED_PROXIES' : '，默认：本机 + 容器网段'}）`}`);
         if (server.superCount !== 1) {
             console.log(`  ⚠ 超级管理员有 ${server.superCount} 个（应为 1 个）：`);
             console.log('      在服务器上执行  node server.js --set-super <昵称>  指定一位。');
@@ -1260,4 +1372,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { createServer };
+module.exports = { createServer, resolveClientIp, parseTrustedProxies };

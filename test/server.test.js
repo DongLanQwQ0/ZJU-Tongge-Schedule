@@ -702,7 +702,11 @@ test('邀请链接：管理页用到的字段都齐（剩余时间 / 状态 / �
             method: 'POST', token: t.owner.token, body: { ttl: '3d', label: '给室友' }
         })).json()).invite;
         assert.equal(inv.label, '给室友');
-        assert.ok(inv.remainingMs > 0 && inv.remainingMs <= 3 * 86400000);
+        // 留几秒余量：expiresAt 和 remainingMs 是两次取时刻算出来的，
+        // 中间隔着几行代码，机器忙的时候差值会被放大到毫秒级以上，
+        // 卡死在正好 3 天上会偶发失败（与功能无关，是用例自己的精度问题）。
+        assert.ok(inv.remainingMs > 0 && inv.remainingMs <= 3 * 86400000 + 5000,
+            `remainingMs 应当是正的且不超过 3 天，实际 ${inv.remainingMs}`);
         assert.equal(inv.active, true);
         assert.equal(inv.expired, false);
         assert.equal(inv.revoked, false);
