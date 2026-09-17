@@ -153,6 +153,8 @@ a { color: var(--blue); }
     box-shadow: 0 1px 3px var(--shadow-strong);
 }
 .icon-btn[hidden] { display: none; }
+/* 顶栏那颗 Star 是 <a>（要能跳外链），补掉链接默认的下划线与取色 */
+a.icon-btn { text-decoration: none; }
 
 /* ------------------------------------------------------------ 布局 */
 

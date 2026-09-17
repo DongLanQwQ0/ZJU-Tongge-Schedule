@@ -156,6 +156,20 @@ test('页脚里的 CoPig 那行确实在页面上', () => {
     assert.match(html, /鸣谢/);
 });
 
+test('顶栏和页脚都有去 GitHub 点 Star 的入口', () => {
+    const REPO = 'https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule';
+    const links = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
+    const stars = links.filter((u) => u === REPO);
+    // 顶栏一颗（登录后一直可见）+ 页脚一行（连登录页都看得到）
+    assert.ok(stars.length >= 2, `应当有顶栏 + 页脚两处入口，实际 ${stars.length} 处`);
+    // 顺带钉死地址：仓库名打错一个字，那颗星就会静默指向不存在的页面
+
+    // 外链一律带 rel=noopener —— 少了它，对方页面能通过 window.opener 操作我们这页
+    for (const tag of html.matchAll(/<a[^>]*github\.com[^>]*>/g)) {
+        assert.match(tag[0], /rel="noopener/, `外链缺 rel=noopener：${tag[0]}`);
+    }
+});
+
 // ---------------------------------------------------------------- 动画
 
 test('导出的保险丝还在（必须能压掉一切动画与过渡）', () => {
