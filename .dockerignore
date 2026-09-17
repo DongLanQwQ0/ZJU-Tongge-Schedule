@@ -34,8 +34,10 @@ Desktop.ini
 docker-compose.yml
 docker-compose.*.yml
 
-
-# ⚠️ 注意：data/ **不能**排除在这里。
-#    需求是把现有数据一起打进镜像，所以 data/ 必须留在上下文里。
-#    代价是镜像里会有密码哈希和会话令牌 —— 详见 README 的部署说明，
-#    这个镜像**不要**推到公开仓库。
+# ⚠️ 数据（账号、会话、群组）**绝不能**进镜像。
+#    镜像会被推到 registry、被复制、被留档；一旦带上 data/，等于把密码哈希和
+#    会话令牌一起发出去 —— 而会话令牌就是 Bearer 凭据，拿到即可冒充登录。
+#    首次部署改成显式导入：
+#      docker run --rm -v tongge-data:/data -v "$PWD/data:/seed" alpine \
+#        sh -c 'cp -R /seed/. /data/'
+data/

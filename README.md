@@ -86,11 +86,27 @@
 **前提**：服务器上装了 Docker，并且有一个反向代理（Nginx / Caddy / 1Panel 等）
 负责 HTTPS 与子路径。
 
+**第 0 步：配好根密钥**——它是存储加密的唯一钥匙，**必须放在部署目录之外**
+（放在 `/opt/tongge` 里就等于和数据一起被拷走，加密白做）：
+
+```bash
+KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+sudo install -d -m 700 /etc/tongge
+printf 'TONGGE_ROOT_KEY=%s\n' "$KEY" | sudo tee /etc/tongge/key.env >/dev/null
+sudo chmod 600 /etc/tongge/key.env
+```
+
+**第 1 步：起服务**
+
 ```bash
 docker compose up -d --build     # 构建 + 启动
 docker compose logs -f tongge    # 看启动横幅
 docker compose down              # 停服务（数据在卷里，不会丢）
 ```
+
+> 没有根密钥，服务会**拒绝启动**，并打印上面那条生成命令——这是故意的：
+> 绝不允许悄悄退化成明文存盘（那没人会发现，而启动失败一眼就看得见）。
+> 从旧版本升级上来还要跑一次数据迁移，见 [部署详解](#部署详解) 的「存储加密与迁移」。
 
 容器默认只映射到 `127.0.0.1:3560`，**由反代转发进来**，站点形如 `https://<主机>/tongge/`。
 反代要做哪三件事、子路径怎么配、真实 IP 的问题，全在 [部署详解](#部署详解)。
@@ -390,18 +406,75 @@ docker build -t tongge:1.0 --build-arg INCLUDE_SESSIONS=false .
 
 ### 数据放在哪
 
-镜像自带的 `data/` 放在 `/opt/seed`，运行期数据在 `/app/data`（命名卷 `tongge-data`）。
-`entrypoint.sh` 负责把前者铺到后者，**且只铺一次**：
+运行期数据在 `/app/data`（命名卷 `tongge-data`）。**镜像里不带数据了**：
+早期版本把 `data/` 烧进 `/opt/seed`，好让首次部署自带账号，代价是镜像层里留着
+密码哈希和明文会话令牌——镜像会被推 registry、被复制、被留档，那等于把站点交出去。
+现在改成显式导入（想带旧数据时手动做一次）：
+
+```bash
+docker run --rm -v tongge-data:/data -v "$PWD/data:/seed" alpine \
+  sh -c 'cp -R /seed/. /data/'
+```
+
+`entrypoint.sh` 仍然支持 `/opt/seed`（有就铺、卷里非空就绝不动），所以那条老路照样能用：
 
 | 场景 | 行为 |
 |---|---|
-| 首次启动，卷是空的 | 铺入种子：账号、群组、会话都带过来（具体数量见启动日志） |
+| 首次启动，卷是空的、又没有种子 | 从空库开始（第一个注册的人可以 `--super` 设为超管） |
+| 首次启动，卷是空的、`/opt/seed` 有东西 | 铺入种子，同学不用重新注册 |
 | 容器重启 / 换镜像版本 | **跳过铺入**，同学新传的课表与账号一个不动 |
 | 卷里只有 `groups/` | 认作「已有数据」，同样跳过 |
-| 卷里是个空目录 | 认作首次启动，照常铺入 |
 
 判断依据是 `users.json` / `sessions.json` 是否存在，或 `groups/` 里有没有文件——
 不是「目录是否为空」，免得被 `lost+found` 之类的东西误判。
+
+---
+
+### 存储加密与迁移
+
+**现状**：昵称、课表、私密备注、群内对外备注在盘上是密文，钥匙是根密钥
+`TONGGE_ROOT_KEY`（`/etc/tongge/key.env`，在部署目录之外）。挡的是"数据卷/备份/
+部署包/镜像被拿走"；**挡不住拿到执行权限的人**（运行时钥匙必须在内存里）。
+取舍与理由见 `docs/superpowers/specs/2026-09-17-storage-encryption-design.md`。
+
+**从旧版本升级上来**（部署方式是用仓库代码覆盖，所以顺序不能错）：
+
+```bash
+# 0. 备份（数据在命名卷里）
+docker run --rm -v tongge-data:/data -v "$PWD:/backup" alpine \
+  tar czf /backup/tongge-$(date +%Y%m%d-%H%M).tar.gz -C /data .
+
+# 1. 根密钥（首次才需要；已经有 /etc/tongge/key.env 就跳过）
+KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+sudo install -d -m 700 /etc/tongge
+printf 'TONGGE_ROOT_KEY=%s\n' "$KEY" | sudo tee /etc/tongge/key.env >/dev/null
+sudo chmod 600 /etc/tongge/key.env
+
+# 2. 代码就位
+cd /opt/tongge && git pull
+
+# 3. 停服务 —— 这一步不能省：运行中的进程内存里是明文，
+#    任何一次写入都会把迁移结果覆盖回明文
+docker compose stop
+
+# 4. 迁移（CLI 模式，不启 HTTP；缺根密钥会直接报错）
+docker compose run --rm tongge node server.js --migrate-vault --super DongLan
+
+# 5. 起服务
+docker compose up -d --build
+
+# 6. 抽查：卷里搜不到任何备注原文（引号里换成你自己知道的一条）
+docker run --rm -v tongge-data:/data alpine \
+  grep -rl "某条备注原文" /data || echo "文件里已无该明文 ✓"
+
+# 7. 确认备份可用后，删掉迁移留下的明文副本
+docker run --rm -v tongge-data:/data alpine sh -c 'rm -f /data/*.plaintext-*'
+```
+
+迁移是**幂等**的，重复跑不会重复加密；服务启动时若发现还有明文，会**拒绝启动**并提示
+跑上面第 4 步——免得"一半明文一半密文"的状态悄悄上线。
+
+会话令牌也在这次升级里换成了 sha256 落盘（`sessions.json` 的键），**同学不需要重新登录**。
 
 ---
 
@@ -527,6 +600,14 @@ return {
   否则会话表一坏就是「全员被强制登出」。
 - **响应头**：`nosniff`、`X-Frame-Options: DENY`、`no-referrer`，以及一条
   只允许自身资源的 CSP。
+- **敏感字段落盘加密**：昵称、课表、私密备注、群内对外备注都用 `TONGGE_ROOT_KEY`
+  这一把根密钥加密后才写盘（`AES-256-GCM`，AAD 绑住"用途 + 归属"，所以把课表的密文
+  冒充备注、把甲群的对外备注挪到乙群都会解密失败）。读进内存才解密，所以业务代码
+  一行没改。**代价说清楚**：它挡的是"数据卷 / 备份 / 部署包 / 镜像被拿走"，
+  **挡不住拿到执行权限的人**——运行时钥匙必须在内存里，这是信息论限制。
+  根密钥必须放在部署目录之外。设计见 `docs/superpowers/specs/` 里那份存储加密文档。
+- **会话令牌只存 sha256**：`sessions.json` 的键是令牌的哈希，明文令牌只在签发那一刻
+  存在过。此前明文落盘，等于「拿到这个文件就能冒充任意登录用户，连密码都不用」。
 - **注册验证码自己画**：算式是**画进像素**的（不是 SVG 的 `<text>`），
   所以响应里只有一张图，想读答案得认图；题目 3 分钟过期、**一次一废**，
   答错也作废，拿同一个 id 反复试答案这条路被堵死。
@@ -615,10 +696,12 @@ node server.js --revoke-admin 你的昵称   # 取消管理员
 npm test        # node --test，零依赖
 ```
 
-实测：**187 项全部通过**（Node 24）。覆盖 ICS 解析、地点分级、教学周、重合统计、
+实测：**234 项全部通过**（Node 24）。覆盖 ICS 解析、地点分级、教学周、重合统计、
 导出视图、账号/会话/群组存储、注册验证码（出题/画图/过期/一次性核销）、管理页、
 前端接线与六个屏幕的 DOM 全量扫描，以及一次完整的 HTTP 端到端旅程和一组安全回归
-（穿越矩阵、限流、415/413、响应头）。
+（穿越矩阵、限流、415/413、响应头）、存储加密（AAD 跨用户/跨群/跨用途必须失败、
+迁移幂等与回滚、四种"拒绝启动"）、会话令牌哈希化（含老数据升级不踢人下线）、
+超管守卫（撤不掉/删不掉/重置不了）。
 
 > 如果 `npm test` 报「找不到测试文件」（旧版 Node 不会展开 `--test` 里的通配符），
 > 直接写全：`node --test test/*.test.js`。
@@ -639,19 +722,20 @@ shared/            纯函数层：ics / periods / weeks / compare（前后端与
                     只有这里被列进白名单的这 5 个文件能通过 /shared/* 下载
 shared/auth.js     密码哈希与会话令牌生成（仅服务端）
 shared/captcha.js  注册验证码：个位数四则运算 + 手写 PNG 编码（仅服务端，零依赖）
-shared/store.js    原子写（带重试）+ 写队列 + 校验 + .bak 备份 + 过期清理
+shared/vault.js    存储加密：AES-256-GCM + AAD 域分离 + 根密钥解析（仅服务端）
+shared/store.js    原子写（带重试）+ 写队列 + 校验 + .bak 备份 + 读写边界上的加解密
 public/            前端：index.html / app.js / style.css / api.js
 public/lib/        本地内置的 html2canvas 与二维码生成器（不依赖 CDN）
 public/img/        导出教程截图与吉祥物
 data/              运行时生成：users.json / sessions.json / groups/*.json
-                    users/sessions 会额外留一份 .bak，损坏时自动恢复
-test/              node --test，含一组安全回归（穿越矩阵、限流、415/413、响应头）
+                    敏感字段（昵称/课表/备注）是密文；users/sessions 另留一份 .bak
+test/              node --test，含一组安全回归（穿越矩阵、限流、415/413、响应头、加密）
 docs/              设计文档与 docs/ROADMAP.md（待办与规划）
 docs/superpowers/  设计规格（specs/，每份都标了日期与当时的取舍）
-Dockerfile         node:22-alpine 镜像；把 data/ 作为种子烧进 /opt/seed
+Dockerfile         node:22-alpine 镜像。**不带 data/**（镜像里不留哈希与令牌）
 docker-compose.yml 一条命令起服务，数据落在命名卷 tongge-data，端口只绑本机给反代用
 entrypoint.sh      首次启动把种子铺到数据卷（已有数据则绝不覆盖）
-.dockerignore      挡住真实课表；明确放行 data/
+.dockerignore      挡住真实课表与 data/
 dist/              本地打包产物（镜像 tar 与 zip），不进版本库
 ```
 

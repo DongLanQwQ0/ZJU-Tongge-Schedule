@@ -4,10 +4,10 @@
 #
 # 构建：
 #   docker build -t tongge:1.0 .
-#   docker build -t tongge:1.0 --build-arg INCLUDE_SESSIONS=false .   # 不带登录态
 #
-# 运行：
-#   docker run -d --name tongge -p 3000:3000 -v tongge-data:/app/data tongge:1.0
+# 运行（根密钥必须从环境注入，见 docker-compose.yml）：
+#   docker run -d --name tongge -p 3000:3000 \
+#     -e TONGGE_ROOT_KEY=<64 位 hex> -v tongge-data:/app/data tongge:1.0
 
 FROM node:22-alpine
 
@@ -30,15 +30,15 @@ COPY server.js package.json ./
 COPY shared/ ./shared/
 COPY public/ ./public/
 
-# 自带的种子数据（需求：把现有数据一起打包）。
-# 放在 /opt/seed 而不是直接放 /app/data，是为了让入口脚本能区分
-# 「首次启动」和「卷里已经有数据」：卷非空就绝不覆盖。
-COPY data/ /opt/seed/
-
-# 默认把会话表也带上（这样部署完同学不用重新登录）。
-# 想干净上线就 --build-arg INCLUDE_SESSIONS=false
-ARG INCLUDE_SESSIONS=true
-RUN if [ "$INCLUDE_SESSIONS" != "true" ]; then rm -f /opt/seed/sessions.json; fi
+# 自带的种子数据目录（可选）。
+#
+# 镜像里**不带** data/ —— 早期版本把数据一起烧进镜像，好让首次部署自带账号，
+# 代价是镜像层里留着密码哈希和**明文会话令牌**。镜像会被推 registry、被复制、
+# 被留档，那等于把站点交出去。现在改成显式导入：
+#   docker run --rm -v tongge-data:/data -v "$PWD/data:/seed" alpine \
+#     sh -c 'cp -R /seed/. /data/'
+# 入口脚本仍然支持 /opt/seed（有就铺，卷里非空就绝不动），所以那条路照样能用。
+RUN mkdir -p /opt/seed
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 # chmod +x 是必须的，不是多余：Windows 上的 git 不记录可执行位，
