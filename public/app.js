@@ -878,7 +878,6 @@
         badge.className = 'badge' + (n ? ' ok' : '');
         if (changed && n) bump(badge);
         $('#home-drop-text').textContent = n ? '点击替换 .ics 课表文件' : '点击选择 .ics / .txt 课表文件';
-        $('#home-account-name').textContent = state.me ? state.me.nickname : '';
         // 管理入口只给超级用户看；服务端每个 /api/admin/* 还会再查一次身份
         $('#admin-entry-card').hidden = !(state.me && state.me.admin);
     }
@@ -927,7 +926,7 @@
         });
     }
 
-    /** 注销账号：先把后果说清楚，再要一次密码 */
+    /** 注销账号：连着两道提醒 —— 先把后果摆清楚，再要一次密码 */
     async function deleteAccount() {
         var owned = (state.groups || []).filter(function (g) { return g.isCreator && !g.pending; });
         var hint = '账号、课表、备注都会被删除，无法恢复。';
@@ -936,9 +935,15 @@
                 owned.map(function (g) { return g.name; }).join('、') +
                 '），群主会自动转给群里最早加入的成员；只有你自己的群会直接解散。';
         }
+
+        // 第一道提醒：这一步不收集任何东西，只是把后果摆出来 ——
+        // 从菜单手滑点进来的人，到这儿就会退出去
+        if (!await askConfirm('注销账号', hint, '我明白，继续')) return;
+
+        // 第二道提醒：真要注销，还得再输一次密码
         var pw = await askText({
-            title: '注销账号',
-            hint: hint,
+            title: '注销账号 · 最后一步',
+            hint: '输入密码确认。这一步之后，账号、课表和备注就真的没了。',
             placeholder: '输入密码确认',
             password: true,
             maxlength: 64
@@ -960,8 +965,6 @@
     }
 
     function initHome() {
-        $('#btn-delete-account').addEventListener('click', deleteAccount);
-
         $('#home-file').addEventListener('change', function (e) {
             var f = e.target.files[0];
             if (f) uploadMyCourses(f, $('#home-badge'), $('#home-drop'));
@@ -2521,6 +2524,8 @@
         menu.addEventListener('click', function () { setOpen(false); });
         // 分享：分享的是站点首页，不是当前这一屏（当前屏的地址里可能带邀请码）
         $('#btn-share').addEventListener('click', function () { shareSite(); });
+        // 注销也收在这里（原来在首页最下方那张「账号」卡片里）
+        $('#btn-delete-account').addEventListener('click', function () { deleteAccount(); });
         document.addEventListener('click', function (e) {
             if (menu.hidden) return;
             var t = e.target;

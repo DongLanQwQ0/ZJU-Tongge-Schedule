@@ -605,7 +605,7 @@ test('带令牌启动 -> 直接进首页', async () => {
     assert.equal(a.activeScreen(), 'home');
     assert.equal(a.el('#topbar').hidden, false);
     assert.match(a.el('#home-course-status').textContent, /已上传 1 个时段/);
-    assert.equal(a.el('#home-account-name').textContent, u.nickname);
+    assert.equal(a.el('#topbar-who').textContent, u.nickname);
 });
 
 test('登录：密码错 -> 表单内红字 + 清空密码框 + 不跳走', async () => {
@@ -680,7 +680,7 @@ test('首页：五个入口卡片都在，本地比对页能打开', async () =>
 
     assert.equal(a.activeScreen(), 'home');
     for (const id of ['#home-groups', '#home-drop', '#btn-create-group', '#btn-join-group',
-        '#btn-local', '#btn-delete-account']) {
+        '#btn-local']) {
         assert.ok(a.el(id), `首页缺少 ${id}`);
     }
 
@@ -938,6 +938,50 @@ test('移除成员：确认按钮要按两次才真的移除', async () => {
     await tick(250);
     detail = await raw(`/api/groups/${g.body.code}`, { token: owner.token });
     assert.ok(!detail.body.members.some((m) => m.id === mate.id), '第二下才真的移出');
+});
+
+test('注销账号：挪到「更多」菜单里，而且要连着确认两次', async () => {
+    const u = await user();
+    const a = await started(base, { token: u.token });
+
+    // 首页那张「账号」卡片已经没了，入口在更多菜单里
+    assert.equal(a.el('#home-account-name'), null, '首页不该再挂着账号卡片');
+    assert.ok(a.el('#more-menu').querySelector('#btn-delete-account'), '注销入口该在更多菜单里');
+
+    // 只认「带指定子元素、且不在关闭动画里」的弹窗：
+    //   · 首次打开还有一张内测提示，它也是 .modal
+    //   · dismiss() 是播完动画才把弹窗摘掉，不等它走完就会选中上一张
+    const pick = (sel) => a.doc.querySelectorAll('.modal')
+        .filter((m) => !m.hidden && !m._classes.has('closing') && m.querySelector(sel))[0];
+
+    // 第一道提醒：取消之后什么也不该发生
+    a.click('#btn-more');
+    a.click('#btn-delete-account');
+    await tick(50);
+    const first = pick('[data-x="cancel"]');
+    assert.ok(first, '第一道提醒应当弹出来');
+    a.click(first.querySelector('[data-x="cancel"]'));
+    await tick(50);
+    assert.equal((await raw('/api/me', { token: u.token })).status, 200, '取消之后账号还在');
+
+    // 两道都走完：先「我明白」，再输密码
+    a.click('#btn-more');
+    a.click('#btn-delete-account');
+    await tick(50);
+    const warn = pick('[data-x="ok"]');
+    assert.ok(warn, '第一道提醒');
+    a.click(warn.querySelector('[data-x="ok"]'));
+    await tick(50);
+
+    const pwBox = pick('input');
+    assert.ok(pwBox, '第二道提醒要输密码');
+    const input = pwBox.querySelector('input');
+    assert.equal(input.type, 'password', '第二道要的是密码，不是随便一句确认');
+    input.value = 'pw123456';
+    a.click(pwBox.querySelector('[data-x="ok"]'));
+    await tick(250);
+
+    assert.equal((await raw('/api/me', { token: u.token })).status, 401, '两次确认之后账号才真的没了');
 });
 
 test('群组页：群主看不到「退群」，成员看得到；解散只有群主有', async () => {
