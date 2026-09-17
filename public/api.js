@@ -105,8 +105,13 @@
         setToken: setToken,
         onUnauthorized: function (fn) { onUnauthorized = fn; },
 
-        register: function (nickname, password) {
-            return request('api/register', 'POST', { nickname: nickname, password: password });
+        // 注册验证码：服务端出题（一道算术题画成 PNG），返回 { enabled, id, image }
+        captcha: function () { return request('api/captcha'); },
+
+        register: function (nickname, password, box) {
+            var body = { nickname: nickname, password: password };
+            if (box) { body.captchaId = box.id; body.captchaAnswer = box.answer; }
+            return request('api/register', 'POST', body);
         },
         login: function (nickname, password) {
             return request('api/login', 'POST', { nickname: nickname, password: password });

@@ -245,6 +245,13 @@ main { max-width: 720px; margin: 0 auto; padding: 14px; }
 label.field { display: block; margin-bottom: 10px; }
 label.field span { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 5px; }
 
+/* 注册验证码：左边一张算术题图片、右边填答案。
+   图按高度定尺寸（宽度跟比例走），式子长了就整体小一点；
+   窄屏放不下时输入框换行下去，不挤着图。 */
+.captcha-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.captcha-img { height: 46px; width: auto; max-width: 100%; display: block; border-radius: 8px; cursor: pointer; }
+.captcha-row .input { flex: 1 1 110px; min-width: 0; }
+
 .input {
     width: 100%; padding: 12px 13px;
     border: 1px solid var(--field-border); border-radius: 11px;

@@ -381,9 +381,30 @@
 
     function clearAuthMarks() {
         authError('');
-        ['#auth-nickname', '#auth-password', '#auth-confirm'].forEach(function (sel) {
+        ['#auth-nickname', '#auth-password', '#auth-confirm', '#auth-captcha'].forEach(function (sel) {
             $(sel).classList.remove('invalid');
         });
+    }
+
+    // 注册验证码：服务端出一道四则运算并画成 PNG，前端只负责显示和「换一张」
+    var captchaOn = false;
+    var captchaId = '';
+
+    async function refreshCaptcha() {
+        var field = $('#auth-captcha-field');
+        var img = $('#auth-captcha-img');
+        try {
+            var r = await API.captcha();
+            captchaOn = r.enabled !== false;
+            captchaId = r.id || '';
+            if (captchaOn && r.image) img.src = r.image;
+        } catch (e) {
+            // 出题接口都挂了就别拿它拦着人注册；真需要拦，服务端会自己回 400
+            captchaOn = false;
+            captchaId = '';
+        }
+        field.hidden = !(authMode === 'register' && captchaOn);
+        $('#auth-captcha').value = '';
     }
 
     function initAuth() {
@@ -395,6 +416,9 @@
             var isReg = authMode === 'register';
             $('#auth-confirm-field').hidden = !isReg;
             $('#auth-tip').hidden = !isReg;
+            // 切到注册才去取题；切回登录就把这一格收起来
+            if (isReg) refreshCaptcha();
+            else $('#auth-captcha-field').hidden = true;
             $('#auth-submit').textContent = isReg ? '注册并登录' : '登录';
             $('#auth-password').setAttribute('autocomplete', isReg ? 'new-password' : 'current-password');
             clearAuthMarks();
@@ -406,8 +430,11 @@
             doAuth();
         });
 
+        // 看不清 / 想换一题：点图就换。服务端一次性核销，换一张就是换一个 id
+        $('#auth-captcha-img').addEventListener('click', function () { refreshCaptcha(); });
+
         // 一开始重新输入就把上一次的红字擦掉，别让它一直杵在那
-        ['#auth-nickname', '#auth-password', '#auth-confirm'].forEach(function (sel) {
+        ['#auth-nickname', '#auth-password', '#auth-confirm', '#auth-captcha'].forEach(function (sel) {
             $(sel).addEventListener('input', function () {
                 $(sel).classList.remove('invalid');
                 authError('');
@@ -442,12 +469,19 @@
             confirmEl.focus();
             return authError('两次输入的密码不一样');
         }
+        if (isReg && captchaOn && !$('#auth-captcha').value.trim()) {
+            $('#auth-captcha').classList.add('invalid');
+            $('#auth-captcha').focus();
+            return authError('把图里的算式算出来填上');
+        }
 
         btn.disabled = true;
         btn.textContent = isReg ? '注册中…' : '登录中…';
         try {
             var r = isReg
-                ? await API.register(nickname, password)
+                ? await API.register(nickname, password, captchaOn
+                    ? { id: captchaId, answer: $('#auth-captcha').value.trim() }
+                    : null)
                 : await API.login(nickname, password);
             API.setToken(r.token);
             state.me = await API.me();
@@ -459,6 +493,9 @@
                 await joinByCode(code);
             }
         } catch (e) {
+            // 验证码是一次性的：注册失败（不管是不是验证码错）都换一张，
+            // 免得让人对着同一道用过的题反复试
+            if (isReg) await refreshCaptcha();
             // 具体原因留在表单里（toast 三秒就没了，容易错过）
             authError(e.message);
             toast(e.message, true);

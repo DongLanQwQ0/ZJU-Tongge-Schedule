@@ -75,6 +75,13 @@
                 <span>确认密码</span>
                 <input class="input" id="auth-confirm" name="confirm" type="password" placeholder="再输一次" autocomplete="new-password">
             </label>
+            <label class="field" id="auth-captcha-field" hidden>
+                <span>验证码 · 算一算图里的式子</span>
+                <div class="captcha-row">
+                    <img class="captcha-img" id="auth-captcha-img" alt="算术验证码" title="点一下换一题">
+                    <input class="input" id="auth-captcha" name="captcha" inputmode="numeric" maxlength="2" placeholder="等于几" autocomplete="off">
+                </div>
+            </label>
 
             <p class="form-err" id="auth-error" hidden></p>
 

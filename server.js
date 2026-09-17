@@ -17,6 +17,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
+const crypto = require('node:crypto');
+const captcha = require('./shared/captcha.js');
 const { createStore, fail, validateCode } = require('./shared/store.js');
 const config = require('./shared/config.js');
 
@@ -264,6 +266,42 @@ async function createServer(options = {}) {
     await store.init();
     if (!options.skipCleanup) store.cleanup().catch((e) => console.error('[cleanup]', e.message));
 
+    // ------------------------------------------------------------ 注册验证码
+    //
+    // 题目与答案只活在内存里：3 分钟过期、**一次一废**（不管答对答错都作废，
+    // 免得拿同一个 id 反复试答案）。正式服开着，测试里用 createServer({captcha:false}) 关掉。
+    //
+    // 它挡的是「随手写个脚本灌号」，挡不住愿意上 OCR/打码平台的人 ——
+    // 和按 IP 的注册限流是叠加关系，不是替代。
+    const captchaOn = options.captcha !== false;
+    const captchaRng = options.captchaRng;      // 测试注入固定随机源，让题目可预测
+    const CAPTCHA_TTL = 3 * 60 * 1000;
+    const CAPTCHA_MAX = 500;                    // 同时挂着的题目上限，别让它无限长
+    const captchas = new Map();
+
+    function issueCaptcha() {
+        const now = Date.now();
+        captchas.forEach(function (v, k) { if (v.expireAt < now) captchas.delete(k); });
+        if (captchas.size >= CAPTCHA_MAX) captchas.clear();   // 兜底：极端情况整批作废
+        const made = captcha.create(captchaRng);
+        const id = crypto.randomBytes(9).toString('hex');
+        captchas.set(id, { answer: made.answer, expireAt: now + CAPTCHA_TTL });
+        return {
+            enabled: true,
+            id: id,
+            image: 'data:image/png;base64,' + made.png.toString('base64')
+        };
+    }
+
+    /** 核销一道题：不管对错都作废，避免拿同一个 id 反复试答案 */
+    function takeCaptcha(id, answer) {
+        const key = String(id == null ? '' : id);
+        const rec = captchas.get(key);
+        if (rec) captchas.delete(key);
+        if (!rec || rec.expireAt < Date.now()) return false;
+        return String(answer == null ? '' : answer).trim() === rec.answer;
+    }
+
     // 限流阈值：故意放得很宽，正常人碰不到，只有脚本会撞上。
     // 测试里可以传 options.limits 覆盖。
     const limits = Object.assign({
@@ -336,6 +374,12 @@ async function createServer(options = {}) {
             tagline: config.tagline
         })],
 
+        // 注册验证码：一道个位数加减法，服务端画成 PNG 发下来。
+        // 算式是画进像素的，响应里只有图 —— 想看答案得认图，不能直接从 JSON 里读。
+        ['GET', /^\/api\/captcha$/, async () => (captchaOn
+            ? issueCaptcha()
+            : { enabled: false, id: '', image: '' })],
+
         // ---- 账号
         ['POST', /^\/api\/register$/, async (req, res) => {
             const ip = clientIp(req);
@@ -348,6 +392,11 @@ async function createServer(options = {}) {
                 throw e;
             }
             const body = await readBody(req, res);
+            if (captchaOn && !takeCaptcha(body.captchaId, body.captchaAnswer)) {
+                // 和撞限流一样记一笔：连着被验证码挡下，本身就是值得看的信号
+                store.appendAudit({ event: 'register_blocked', ip, reason: '验证码不对' });
+                throw fail(400, '验证码不对，换一张再试');
+            }
             const user = await store.createUser(body.nickname, body.password, { ip });
             store.appendAudit({
                 event: 'register',
