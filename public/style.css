@@ -41,6 +41,7 @@
     --legend-bg: #d1d1d6;     /* 图例色块底：比卡底深一点，深/浅两种边框才都看得见 */
     --danger-bg: #ffe5e3;
     --pink: #e8437f;          /* 页脚 CoPig 那行 */
+    --orange: #ef6c00;        /* 页脚署名那行 */
 
     --ok-bg: #d7f5df;
     --ok-text: #1d8a3a;
@@ -93,6 +94,8 @@
     --legend-bg: #48484a;
     --danger-bg: rgba(255, 69, 58, .18);
     --pink: #ff8ab8;
+    /* 深色底上要提亮，否则橙色发闷、和旁边的粉色也不搭 */
+    --orange: #ffa53d;
 
     --ok-bg: rgba(48, 209, 88, .2);
     --ok-text: #30d158;
@@ -501,7 +504,7 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
     display: flex; align-items: center; justify-content: center;
 }
 .foot-lines { text-align: center; min-width: 0; }
-.foot-sign { font-size: 13px; font-weight: 600; color: var(--text-2); letter-spacing: .4px; }
+.foot-sign { font-size: 13px; font-weight: 600; color: var(--orange); letter-spacing: .4px; }
 .foot-sub { font-size: 12px; line-height: 1.5; color: var(--text-2); opacity: .72; }
 .foot-sub + .foot-sub { margin-top: 2px; }
 .foot-sub s { opacity: .75; }
