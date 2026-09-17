@@ -153,6 +153,8 @@ a { color: var(--blue); }
     box-shadow: 0 1px 3px var(--shadow-strong);
 }
 .icon-btn[hidden] { display: none; }
+/* 图标按钮里的 SVG（返回箭头）：display:block 去掉行内基线留出的那几像素 */
+.icon-btn svg { display: block; }
 /* 顶栏那颗 Star 是 <a>（要能跳外链），补掉链接默认的下划线与取色 */
 a.icon-btn { text-decoration: none; }
 
