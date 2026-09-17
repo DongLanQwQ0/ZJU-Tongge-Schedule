@@ -102,10 +102,12 @@ test('api.js 里每个方法都请求了一个真实存在的路由', () => {
     assert.ok(routes.length >= 20, `路由提取似乎失配了，只抓到 ${routes.length} 条`);
     assert.ok(routes.every((r) => r.startsWith('/api/')), '所有路由都应挂在 /api/ 下');
 
-    // api.js 里请求的字面量路径。拼接出来的（'/api/groups/' + code + ...）
+    // api.js 里请求的字面量路径。拼接出来的（'api/groups/' + code + ...）
     // 只取静态前缀，用前缀去配路由 —— 够抓「路由改名了但前端没跟」这类错。
+    // 前端写的是相对路径（子路径部署要用），这里统一补前导斜杠再和绝对路由对照。
     const paths = [...new Set(
-        [...api.matchAll(/request\(\s*'(\/api\/[^']*)'/g)].map((x) => x[1])
+        [...api.matchAll(/request\(\s*'(\/?api\/[^']*)'/g)]
+            .map((x) => (x[1].startsWith('/') ? x[1] : '/' + x[1]))
     )];
     assert.ok(paths.length > 8, '应能抓到一批 api 路径');
 
@@ -124,15 +126,17 @@ test('index.html 引用的脚本与样式都在磁盘上', () => {
     assert.ok(srcs.length > 4);
 
     const missing = srcs.filter((s) => {
-        // 服务器把 /shared/* 映射到仓库根的 shared/，其余映射到 public/
-        const rel = s.startsWith('/shared/') ? s.slice(1) : path.join('public', s);
+        // 服务器把 /shared/* 映射到仓库根的 shared/，其余映射到 public/。
+        // index.html 里写的是相对路径（shared/config.js），所以在根路径部署下
+        // 请求的仍是 /shared/*，这里按「去掉前导斜杠就是仓库内路径」来判定。
+        const rel = /^\/?shared\//.test(s) ? s.replace(/^\//, '') : path.join('public', s);
         return !fs.existsSync(path.join(ROOT, rel));
     });
     assert.deepEqual(missing, [], '这些静态资源不存在');
 });
 
 test('shared/ 下的脚本带 ?v= 版本号（缓存事故的防线）', () => {
-    const shared = [...html.matchAll(/src="(\/shared\/[^"]+)"/g)].map((m) => m[1]);
+    const shared = [...html.matchAll(/src="(\/?shared\/[^"]+)"/g)].map((m) => m[1]);
     assert.ok(shared.length >= 5, '应当引用了 shared/ 下的模块');
     for (const s of shared) {
         assert.match(s, /\?v=\d+$/, `${s} 没有 ?v= 版本号`);

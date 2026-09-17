@@ -1434,7 +1434,27 @@
     }
 
     async function joinUrl(code) {
-        return (await joinOrigin()) + '/?code=' + code;
+        // 正常线上环境
+        if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
+            return new URL('./?code=' + encodeURIComponent(code), document.baseURI).href;
+        }
+
+        // 本地开发：仍然使用服务端提供的局域网地址
+        var list = await shareCandidates();
+
+        if (!list.length) {
+            return new URL('./?code=' + encodeURIComponent(code), document.baseURI).href;
+        }
+
+        var localBase = new URL(document.baseURI);
+        var lanBase = new URL(list[0]);
+
+        localBase.protocol = lanBase.protocol;
+        localBase.host = lanBase.host;
+        localBase.search = '';
+        localBase.hash = '';
+
+        return new URL('./?code=' + encodeURIComponent(code), localBase).href;
     }
 
     // -------------------------------------------------------- 邀请链接（可多枚、可过期）
@@ -1755,8 +1775,7 @@
     }
 
     async function renderQr(code) {
-        var origin = await joinOrigin();
-        var url = origin + '/?code=' + code;
+        var url = await joinUrl(code);
 
         $('#group-qr').innerHTML = qrSvg(url, 4);
         $('#group-code').title = url;

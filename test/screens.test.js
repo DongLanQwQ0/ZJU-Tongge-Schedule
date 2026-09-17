@@ -351,6 +351,9 @@ const realClearInterval = globalThis.clearInterval;
 
 function bootApp(baseUrl, opts = {}) {
     doc = buildDocument();
+    // app.js 现在用相对路径 + document.baseURI 拼邀请链接（子路径部署要靠它），
+    // 垫片里得补上，否则 new URL('./?code=1', undefined) 会抛 Invalid URL。
+    doc.baseURI = baseUrl + '/';
 
     const win = {
         DSH: {
@@ -427,8 +430,13 @@ function bootApp(baseUrl, opts = {}) {
         return t;
     });
     setGlobal('clearInterval', (t) => { liveTimers.delete(t); realClearInterval(t); });
+    // api.js 里的路径是相对的（'api/me'），必须按 document.baseURI 解析；
+    // 原来的 baseUrl + url 会拼出 http://127.0.0.1:41234api/me 这种非法地址，
+    // 请求全部失败，于是每个用例都停在登录页。
     setGlobal('fetch', (url, init) => globalThis.__realFetch(
-        String(url).startsWith('http') ? url : baseUrl + url, init));
+        String(url).startsWith('http')
+            ? String(url)
+            : new URL(String(url), doc.baseURI).href, init));
 
     // 真实源码，原样跑
     // 二维码库要在 app.js 之前进全局：它是老式脚本，顶层 var 必须落到全局作用域，

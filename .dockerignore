@@ -29,11 +29,11 @@ Desktop.ini
 *.corrupt-*
 
 # 打包产物本身
-Dockerfile
+
 .dockerignore
 docker-compose.yml
 docker-compose.*.yml
-entrypoint.sh
+
 
 # ⚠️ 注意：data/ **不能**排除在这里。
 #    需求是把现有数据一起打进镜像，所以 data/ 必须留在上下文里。

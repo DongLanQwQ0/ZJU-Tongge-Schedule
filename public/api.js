@@ -85,7 +85,7 @@
             err.status = res.status;
             // 登录/注册自己返回的 401 是「密码不对」，不是「会话过期」——
             // 别让它触发 onUnauthorized，否则会弹一句莫名其妙的「登录状态过期了」
-            var isAuthCall = /^\/api\/(login|register)$/.test(path);
+            var isAuthCall = /^\api\/(login|register)$/.test(path);
             if (res.status === 401 && token && !isAuthCall) {
                 setToken('');
                 if (onUnauthorized) onUnauthorized(err);
@@ -101,77 +101,77 @@
         getToken: getToken,
         setToken: setToken,
         onUnauthorized: function (fn) { onUnauthorized = fn; },
-        meta: function () { return request('/api/meta'); },
+        meta: function () { return request('api/meta'); },
 
         register: function (nickname, password) {
-            return request('/api/register', 'POST', { nickname: nickname, password: password });
+            return request('api/register', 'POST', { nickname: nickname, password: password });
         },
         login: function (nickname, password) {
-            return request('/api/login', 'POST', { nickname: nickname, password: password });
+            return request('api/login', 'POST', { nickname: nickname, password: password });
         },
-        logout: function () { return request('/api/logout', 'POST', {}); },
-        me: function () { return request('/api/me'); },
-        setCourses: function (courses) { return request('/api/me/courses', 'PUT', { courses: courses }); },
-        deleteAccount: function (password) { return request('/api/me', 'DELETE', { password: password }); },
+        logout: function () { return request('api/logout', 'POST', {}); },
+        me: function () { return request('api/me'); },
+        setCourses: function (courses) { return request('api/me/courses', 'PUT', { courses: courses }); },
+        deleteAccount: function (password) { return request('api/me', 'DELETE', { password: password }); },
         setRemark: function (userId, remark) {
-            return request('/api/me/remarks/' + encodeURIComponent(userId), 'PUT', { remark: remark });
+            return request('api/me/remarks/' + encodeURIComponent(userId), 'PUT', { remark: remark });
         },
         changePassword: function (oldPassword, newPassword) {
-            return request('/api/me/password', 'PUT', { oldPassword: oldPassword, newPassword: newPassword });
+            return request('api/me/password', 'PUT', { oldPassword: oldPassword, newPassword: newPassword });
         },
-        myGroups: function () { return request('/api/me/groups'); },
+        myGroups: function () { return request('api/me/groups'); },
 
         // 管理页（服务端还会再查一次管理员身份，前端藏入口只是不碍眼）
-        adminOverview: function () { return request('/api/admin/overview'); },
+        adminOverview: function () { return request('api/admin/overview'); },
         adminSetAdmin: function (userId, admin) {
-            return request('/api/admin/users/' + encodeURIComponent(userId) + '/admin', 'PUT', { admin: !!admin });
+            return request('api/admin/users/' + encodeURIComponent(userId) + '/admin', 'PUT', { admin: !!admin });
         },
         adminDeleteUser: function (userId) {
-            return request('/api/admin/users/' + encodeURIComponent(userId), 'DELETE', {});
+            return request('api/admin/users/' + encodeURIComponent(userId), 'DELETE', {});
         },
         adminResetPassword: function (userId) {
-            return request('/api/admin/users/' + encodeURIComponent(userId) + '/reset-password', 'POST', {});
+            return request('api/admin/users/' + encodeURIComponent(userId) + '/reset-password', 'POST', {});
         },
         adminDeleteGroup: function (code) {
-            return request('/api/admin/groups/' + encodeURIComponent(code), 'DELETE', {});
+            return request('api/admin/groups/' + encodeURIComponent(code), 'DELETE', {});
         },
 
-        createGroup: function (name) { return request('/api/groups', 'POST', { name: name }); },
+        createGroup: function (name) { return request('api/groups', 'POST', { name: name }); },
         // 换掉群自己的码（旧链接全部失效）
-        rotateGroupCode: function (code) { return request('/api/groups/' + code + '/rotate-code', 'POST', {}); },
+        rotateGroupCode: function (code) { return request('api/groups/' + code + '/rotate-code', 'POST', {}); },
         // 发一枚新的邀请链接；ttl 取 '1d' / '3d' / '7d' / '30d' / 'never'
         addInvite: function (code, ttl, label) {
-            return request('/api/groups/' + code + '/invites', 'POST', { ttl: ttl, label: label });
+            return request('api/groups/' + code + '/invites', 'POST', { ttl: ttl, label: label });
         },
         // 作废某一枚邀请链接；想「作废并重发」就传 issueNew
         revokeInvite: function (code, inviteCode, opts) {
-            return request('/api/groups/' + code + '/invites/' + inviteCode, 'DELETE',
+            return request('api/groups/' + code + '/invites/' + inviteCode, 'DELETE',
                 Object.assign({ issueNew: false }, opts || {}));
         },
         // 批量作废（管理页多选）
         revokeInvites: function (code, codes) {
-            return request('/api/groups/' + code + '/invites/revoke', 'POST', { codes: codes });
+            return request('api/groups/' + code + '/invites/revoke', 'POST', { codes: codes });
         },
         // 彻底删掉一条已作废/已过期的记录
         purgeInvite: function (code, inviteCode) {
-            return request('/api/groups/' + code + '/invites/' + inviteCode + '/purge', 'DELETE', {});
+            return request('api/groups/' + code + '/invites/' + inviteCode + '/purge', 'DELETE', {});
         },
-        joinGroup: function (code) { return request('/api/groups/' + code + '/join', 'POST', {}); },
-        groupDetail: function (code) { return request('/api/groups/' + code); },
-        groupSettings: function (code, patch) { return request('/api/groups/' + code + '/settings', 'PUT', patch); },
+        joinGroup: function (code) { return request('api/groups/' + code + '/join', 'POST', {}); },
+        groupDetail: function (code) { return request('api/groups/' + code); },
+        groupSettings: function (code, patch) { return request('api/groups/' + code + '/settings', 'PUT', patch); },
         setSelfRemark: function (code, remark) {
-            return request('/api/groups/' + code + '/self-remark', 'PUT', { remark: remark });
+            return request('api/groups/' + code + '/self-remark', 'PUT', { remark: remark });
         },
         approveRequest: function (code, userId) {
-            return request('/api/groups/' + code + '/requests/' + encodeURIComponent(userId) + '/approve', 'POST', {});
+            return request('api/groups/' + code + '/requests/' + encodeURIComponent(userId) + '/approve', 'POST', {});
         },
         rejectRequest: function (code, userId) {
-            return request('/api/groups/' + code + '/requests/' + encodeURIComponent(userId), 'DELETE', {});
+            return request('api/groups/' + code + '/requests/' + encodeURIComponent(userId), 'DELETE', {});
         },
-        leaveGroup: function (code) { return request('/api/groups/' + code + '/me', 'DELETE', {}); },
+        leaveGroup: function (code) { return request('api/groups/' + code + '/me', 'DELETE', {}); },
         removeMember: function (code, userId) {
-            return request('/api/groups/' + code + '/members/' + encodeURIComponent(userId), 'DELETE', {});
+            return request('api/groups/' + code + '/members/' + encodeURIComponent(userId), 'DELETE', {});
         },
-        deleteGroup: function (code) { return request('/api/groups/' + code, 'DELETE', {}); }
+        deleteGroup: function (code) { return request('api/groups/' + code, 'DELETE', {}); }
     };
 })();
