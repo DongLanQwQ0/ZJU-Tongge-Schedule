@@ -10,6 +10,9 @@
 
     --bg: #f2f2f7;
     --card: #ffffff;
+    /* 不透明的那一档卡底。课表容器用它，不走 --card：
+       课表要能直接导出成 PNG 发群里，半透明背景导出来就是一张灰片 */
+    --card-solid: #ffffff;
     --text: #1c1c1e;
     --text-2: #8e8e93;
     --line: #e5e5ea;
@@ -65,7 +68,10 @@
     color-scheme: dark;
 
     --bg: #000000;
-    --card: #1c1c1e;
+    /* 卡片半透明：深色主题下背后那层夜景照要透出来（见 .bg-photo）。
+       别调到更低 —— 再透一点，正文就开始跟灯比亮度了 */
+    --card: rgba(30, 30, 34, .62);
+    --card-solid: #1c1c1e;
     --text: #f2f2f7;
     --text-2: #98989d;
     --line: #38383a;
@@ -136,6 +142,47 @@ button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; border: none; background: none; }
 a { color: var(--blue); }
 
+/* ------------------------------------------------------------ 装饰背景
+   一张夜景照：紫金港那盏「灿若星辰」灯。**只在深色主题出现** ——
+   浅色主题是白卡片的工具页，底下铺照片只会脏。
+   单独一层固定元素，不是 body 的 background-image：iOS 上
+   background-attachment: fixed 本来就不生效，而这层还得能整个关掉而不动布局。
+   关键是**别把灯放大**：整张图只占视口高度的一半多，灯落在下方，
+   上面那一大片全留给黑 —— 留白比放大更像夜景本身。 */
+.bg-photo { display: none; }
+:root[data-theme="dark"] .bg-photo {
+    display: block;
+    position: fixed; inset: 0; z-index: -1;
+    pointer-events: none;                  /* 纯装饰，别吃点击 */
+    background: #000 url(img/bg-night.jpg) center bottom / auto 58% no-repeat;
+}
+/* 卡片跟着改成半透明，照片才透得出来；但必须糊掉 ——
+   不然灯会清清楚楚地落在字后面，跟正文抢。描边和取色都不动。
+   下面这几条只写在深色主题里：浅色主题的卡片是实心白，多一层模糊只是白耗电。 */
+:root[data-theme="dark"] .card,
+:root[data-theme="dark"] .more-menu,
+:root[data-theme="dark"] .modal .inner {
+    /* -webkit- 那条留给 iOS 17 及更早的 Safari（它们只认带前缀的写法） */
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    backdrop-filter: blur(20px) saturate(150%);
+}
+
+/* ------------------------------------------------------------ 图标
+   Lucide 图标（路径只存在于 index.html 那份内联 sprite 里，见 #i-*）。
+   尺寸用 em：图标跟着它旁边那行字的字号缩，换字号不用逐个改尺寸；
+   描边等在 <symbol> 上，个别地方要压细可以就地覆盖 stroke-width。 */
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.ico {
+    display: inline-block; flex: 0 0 auto;
+    width: 1.15em; height: 1.15em;
+    /* 让图标的中线和文字对齐：中文的视觉重心比西文略低，往下压一点点 */
+    vertical-align: -.22em;
+}
+/* 图标 + 文字并排的按钮：间距交给 gap，不靠空格 */
+.btn.btn-ico {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+}
+
 /* ------------------------------------------------------------ 顶栏 */
 
 .topbar {
@@ -157,12 +204,12 @@ a { color: var(--blue); }
 }
 .icon-btn[hidden] { display: none; }
 /* 图标按钮里的 SVG（返回箭头）：display:block 去掉行内基线留出的那几像素 */
-.icon-btn svg { display: block; }
+.icon-btn .ico { display: block; }
 /* 顶栏那颗 Star 是 <a>（要能跳外链），补掉链接默认的下划线与取色 */
 a.icon-btn { text-decoration: none; }
 
 /* ------------------------------------------------- 左上角那颗求 Star
-   顶栏一出现就展开（⭐ + 一句说明），10 秒后收回成一颗圆图标 —— 加 / 去 .open
+   顶栏一出现就展开（一颗星 + 一句说明），10 秒后收回成一颗圆图标 —— 加 / 去 .open
    由 app.js 的 revealStar() 控制。
    展开靠 max-width 过渡：说明文字宽度不确定，直接 transition width 动不起来。 */
 .icon-btn.star-btn {
@@ -214,7 +261,8 @@ a.icon-btn { text-decoration: none; }
 }
 .menu-item:active { background: var(--fill-active); }
 .menu-item.danger { color: var(--c-cross); }
-.menu-ico { width: 18px; text-align: center; }
+/* 菜单左边那个图标位：固定 18px 见方，每行的文字才能从同一条竖线开始 */
+.menu-ico { width: 18px; height: 18px; display: grid; place-items: center; font-size: 15px; }
 
 /* 危险操作的「第二下」：上膛后按钮变红，让人一眼看出这次点下去就真删了 */
 .btn.armed { background: var(--c-cross); }
@@ -245,6 +293,17 @@ main { max-width: 720px; margin: 0 auto; padding: 14px; }
 label.field { display: block; margin-bottom: 10px; }
 label.field span { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 5px; }
 
+/* 登录页顶部：一枚方角渐变徽标 + 品牌名 + 那句初衷。
+   图形化的标记比一个大号表情稳：深浅两套主题都不用单独调，也不会随系统换一套表情。 */
+.auth-hero { text-align: center; padding: 30px 0 24px; }
+.auth-mark {
+    width: 60px; height: 60px; margin: 0 auto;
+    display: grid; place-items: center;
+    border-radius: 18px; color: #fff;
+    background: linear-gradient(145deg, #4a9dff, var(--blue) 55%, #5e5ce6);
+    box-shadow: 0 10px 24px rgba(0, 122, 255, .3);
+    font-size: 28px;            /* 里头的图标是 1.15em ≈ 32px */
+}
 /* 登录页：那句初衷就是**主标题**，「同格」退成上面的品牌标记。
    功能说明另外放（见 .auth-note），不跟它抢位置。 */
 .auth-brand {
@@ -344,7 +403,7 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .item .grow { flex: 1; min-width: 0; }
 .item .title { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item .sub { font-size: 12px; color: var(--text-2); margin-top: 2px; }
-.item .chev { color: var(--chev); font-size: 18px; }
+.item .chev { color: var(--chev); width: 16px; height: 16px; }
 .item.me { background: var(--me-bg); }
 .item:active { background: var(--fill-active); }
 /* 成员行现在是 div（里面要放「移除」按钮），指针样式得自己给 */
@@ -419,10 +478,16 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .color-box { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
 .legend-item.parity-note { color: var(--text-2); }
 
+/* 比对页标题：两个人名中间夹一枚双向箭头。名字长度不可控，用 flex 兜住，
+   箭头自己缩小一档、颜色压浅，读起来才知道重点是那两个名字 */
+#compare-title { display: flex; align-items: center; gap: 7px; }
+.cmp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-arrow { width: 17px; height: 17px; color: var(--text-2); }
+
 /* ------------------------------------------------------------ 网格 */
 
 .grid-wrap {
-    overflow-x: auto; background: var(--card);
+    overflow-x: auto; background: var(--card-solid);
     border-radius: var(--radius); padding: 8px;
     box-shadow: 0 1px 3px var(--shadow);
 }
@@ -497,7 +562,15 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
    群主关掉了成员分享（成员看），以及一枚能用的票都没有（两种角色各一套文案）。
    调子照内测提示那种口气写 */
 .invite-note { padding: 6px 4px 2px; }
-.invite-note .closed-emoji { font-size: 32px; line-height: 1; margin-bottom: 8px; }
+/* 提示块顶上那枚图标：给个浅色圆角底 —— 线性图标裸放在卡片上会显得飘。
+   底色用 --fill 而不是 --fill-soft：后者在浅色下几乎和白卡片一个颜色 */
+.note-mark {
+    width: 46px; height: 46px; margin: 0 auto 10px;
+    display: grid; place-items: center;
+    border-radius: 14px;
+    background: var(--fill); color: var(--blue);
+    font-size: 20px;
+}
 .invite-note p { font-size: 12px; line-height: 1.7; color: var(--text-2); }
 /* 空态里那颗「生成一条邀请链接」：
    .btn 是 display:block + width:100%（.small 只把宽度改回 auto），在块级里仍然占满一整行；
@@ -514,12 +587,15 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .modal[hidden] { display: none; }
 .modal .inner { background: var(--card); border-radius: 18px; padding: 22px; text-align: center; max-width: 340px; }
 .modal .inner .code { font-family: ui-monospace, Menlo, monospace; font-size: 30px; font-weight: 700; letter-spacing: .12em; margin: 8px 0 14px; }
-.modal .inner svg, .modal .inner img { width: min(70vw, 260px); height: min(70vw, 260px); }
+/* 弹窗里唯一的「大图」就是二维码。必须限定到 #qr-modal-qr：
+   写成 .inner svg 会把弹窗里所有图标（比如内测那枚烧瓶）一起撑成 260px 的方块 */
+#qr-modal-qr svg { display: block; width: min(70vw, 260px); height: min(70vw, 260px); }
 
 /* ------------------------------------------------------------ 内测提示 */
 
 #beta-modal .inner.beta { max-width: 360px; padding: 26px 22px 20px; }
-#beta-modal .beta-emoji { font-size: 40px; line-height: 1; margin-bottom: 10px; }
+/* 内测提示那枚标记：和空态用的是同一种方块，只是大一号 */
+#beta-modal .note-mark.beta-mark { width: 52px; height: 52px; font-size: 23px; }
 #beta-modal h2 { font-size: 18px; margin-bottom: 14px; }
 #beta-modal p { font-size: 14px; line-height: 1.65; margin-bottom: 10px; text-align: left; }
 #beta-modal p.tiny { font-size: 12px; color: var(--text-2); margin-bottom: 18px; text-align: left; }
@@ -546,8 +622,12 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .foot-sub + .foot-sub { margin-top: 2px; }
 .foot-sub s { opacity: .75; }
 .foot-copig { color: var(--pink); font-weight: 700; }
+/* 「鸣谢 … 的服务器」：前面挂一枚小服务器图标，和文字用 flex 对齐 */
+.foot-sub.foot-credit { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.foot-sub.foot-credit .ico { width: 13px; height: 13px; }
 /* 页脚唯一的外链：得看得出能点，所以给粉色 + 悬停下划线 */
 .foot-star { color: var(--pink); font-weight: 600; text-decoration: none; }
+.foot-star .ico { width: 13px; height: 13px; margin-right: 4px; }
 .foot-star:hover { text-decoration: underline; }
 /* 版本号（灰字）：比上面几行再淡一点、小一点 —— 它是给排查问题的人看的，
    同学不需要注意到它。行距单独给，别贴着 Star 那行。

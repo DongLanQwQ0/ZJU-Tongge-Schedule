@@ -215,3 +215,114 @@ test('JS 里用到的动画 class 在 CSS 里都有定义', () => {
         assert.ok(css.includes('.' + cls), `CSS 里缺少 .${cls}`);
     }
 });
+
+// ---------------------------------------------------------------- 图标
+
+/**
+ * 这个站的文案里可以带表情和颜文字 —— 那是它说话的口气（分享文案专门随机挂一个）。
+ * 不许的是**拿表情当图标用**：图标一律是 index.html 那份 Lucide sprite 里的
+ * <use href="#i-*">。所以这里只盯两件事：
+ *   1. 图标位上写的是不是 sprite；
+ *   2. 有没有「只赋值一个表情」的写法（textContent = '🔗' 这种就是字符图标）。
+ */
+const EMOJI_RANGES = [
+    [0x1F000, 0x1FAFF],   // 表情 / 象形 / 补充符号
+    [0x2600, 0x27BF],     // 杂项符号与装饰符（星、太阳、对勾、音符…）
+    [0x2B00, 0x2BFF],     // 杂项符号与箭头
+    [0x2300, 0x23FF],     // 杂项技术符号（⎋ ⌘…）
+    [0x2460, 0x24FF],     // 带圈字母数字
+    [0x25A0, 0x25FF],     // 几何图形
+    [0x200D, 0x200D], [0x20E3, 0x20E3], [0x3030, 0x3030], [0x303D, 0x303D],
+    [0x3297, 0x3297], [0x3299, 0x3299], [0xFE0F, 0xFE0F]
+];
+// 箭头（→ ↑）不在范围内：它们是文案里的连接符（「注册 → 传 .ics」），不是图标
+const emojiChars = (s) => [...s].filter((c) => EMOJI_RANGES.some(([a, b]) => {
+    const cp = c.codePointAt(0);
+    return cp >= a && cp <= b;
+}));
+
+/** 图标位：菜单图标、圆形图标按钮、提示块顶上的标记、图标+文字的按钮、行尾箭头 */
+const ICON_SLOTS = new RegExp('<(?:span|div|svg|button|a)\\b[^>]*class="[^"]*\\b' +
+    '(menu-ico|icon-btn|note-mark|auth-mark|btn-ico|chev)\\b[^"]*"[^>]*>' +
+    '([\\s\\S]*?)(?:</svg>|</span>|</div>|</button>|</a>)', 'g');
+
+test('图标位里只有 Lucide sprite，没有表情和字符图标', () => {
+    const bad = [];
+    for (const m of html.matchAll(ICON_SLOTS)) {
+        const inner = m[2];
+        if (!/#i-[a-z0-9-]+/.test(inner)) {
+            bad.push(`${m[1]} 里没有 sprite 图标：${inner.trim().slice(0, 50)}`);
+        }
+        const emoji = emojiChars(inner);
+        if (emoji.length) bad.push(`${m[1]} 里还留着表情：${emoji.join(' ')}`);
+    }
+    assert.deepEqual(bad, [], '图标位要用 <svg class="ico"><use href="#i-...">');
+});
+
+test('app.js 不拿表情当图标（只有表情、没有别的字的那种赋值）', () => {
+    const emojiOnly = (v) => {
+        const t = String(v).replace(/<[^>]*>/g, '').replace(/\s+/g, '');
+        return t.length > 0 && emojiChars(t).length === [...t].length;
+    };
+    const bad = [...app.matchAll(/\.(?:textContent|innerHTML)\s*=\s*'([^']*)'/g)]
+        .filter((m) => emojiOnly(m[1]))
+        .map((m) => m[1]);
+    assert.deepEqual(bad, [], '这些地方把表情当图标塞进了界面，换成 icon(\'...\') 里的 sprite');
+});
+
+/** index.html 里定义了哪些 #i-* */
+function spriteIds() {
+    return new Set([...html.matchAll(/<symbol id="(i-[a-z0-9-]+)"/g)].map((m) => m[1]));
+}
+
+test('用到的每个图标都在 sprite 里有定义', () => {
+    const have = spriteIds();
+    assert.ok(have.size >= 15, `sprite 里的图标应该抓得到，实际 ${have.size}`);
+
+    // 静态标记：<use href="#i-xxx">
+    const used = [...html.matchAll(/<use href="#(i-[a-z0-9-]+)"/g)].map((m) => m[1]);
+    // 动态渲染：icon('xxx')，以及三元 icon(dir === 'asc' ? 'a' : 'b') 里的两个名字。
+    // 第二个参数是 class，不参与匹配。
+    for (const m of app.matchAll(/\bicon\(([^()]*)\)/g)) {
+        const first = /^\s*'([a-z][a-z0-9-]*)'/.exec(m[1]);
+        if (first) used.push('i-' + first[1]);
+        for (const t of m[1].matchAll(/[?:]\s*'([a-z][a-z0-9-]*)'/g)) used.push('i-' + t[1]);
+    }
+    assert.ok(used.length >= 15, `图标引用应该抓得到，实际 ${used.length}`);
+
+    const missing = [...new Set(used)].filter((id) => !have.has(id)).sort();
+    assert.deepEqual(missing, [], '这些图标没在 sprite 里定义（<symbol id="...">）');
+});
+
+test('装饰背景：只在深色主题出现，压在内容之下，且不吃点击', () => {
+    // 浅色主题是白卡片的工具页，底下铺照片只会脏 —— 默认必须是关掉的
+    assert.match(css, /\.bg-photo\s*\{\s*display:\s*none/);
+
+    const dark = /\[data-theme="dark"\]\s*\.bg-photo\s*\{([^}]*)\}/.exec(css);
+    assert.ok(dark, '深色主题里得有一条 .bg-photo 的规则');
+    assert.match(dark[1], /position:\s*fixed/, '要固定一层，不能跟着页面滚');
+    assert.match(dark[1], /z-index:\s*-1/, '必须压在内容之下');
+    assert.match(dark[1], /pointer-events:\s*none/, '纯装饰层不能吃点击');
+    assert.match(html, /<div class="bg-photo" aria-hidden="true"><\/div>/, 'index.html 里得有这一层');
+});
+
+test('style.css 里引用的图片都在 public/ 下', () => {
+    const urls = [...css.matchAll(/url\(([^)]+)\)/g)]
+        .map((m) => m[1].replace(/['"]/g, '').trim())
+        .filter((u) => !/^(data:|https?:|\/\/)/.test(u));
+    assert.ok(urls.length >= 1, 'style.css 里至少引了一张图（装饰背景）');
+    const missing = urls.filter((u) => !fs.existsSync(path.join(ROOT, 'public', u)));
+    assert.deepEqual(missing, [], '这些图片在 public/ 下不存在');
+});
+
+test('图标尺寸由 .ico 一处控制，sprite 本身不占布局', () => {
+    const ico = /\.ico\s*\{([^}]*)\}/.exec(css);
+    assert.ok(ico, 'style.css 里得有 .ico 这条规则');
+    // 用 em：图标跟着旁边那行字的字号缩，不用逐个尺寸调
+    assert.match(ico[1], /width:\s*1\.15em/);
+
+    const sprite = /\.sprite\s*\{([^}]*)\}/.exec(css);
+    assert.ok(sprite, 'style.css 里得有 .sprite 这条规则');
+    assert.match(sprite[1], /width:\s*0/);
+    assert.match(sprite[1], /height:\s*0/);
+});

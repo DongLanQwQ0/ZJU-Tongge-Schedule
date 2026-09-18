@@ -22,6 +22,27 @@
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // ------------------------------------------------------------ 图标
+
+    /**
+     * 图标一律走 index.html 里那份内联 Lucide sprite（24×24 线性、2px 描边、圆头）。
+     *
+     * 路径只存一份：静态标记里写 <use href="#i-xxx">，动态渲染走这里。
+     * 名字就是 lucide.dev 上的图标名，加图标只需往 sprite 里补一条 <symbol>。
+     * 尺寸交给 CSS 的 .ico（1.15em，跟着字号走）；描边统一 2px，
+     * 个别场景要更细就地覆盖 stroke-width 即可。
+     */
+    function icon(name, cls) {
+        return '<svg class="ico' + (cls ? ' ' + cls : '') +
+            '" aria-hidden="true" focusable="false"><use href="#i-' + name + '"></use></svg>';
+    }
+
+    /** 管理页「排序方向」那颗按钮：箭头跟着方向换，文字也跟着换 */
+    function sortDirHtml(dir) {
+        return icon(dir === 'asc' ? 'arrow-up-narrow-wide' : 'arrow-down-wide-narrow') +
+            '<span>' + (dir === 'asc' ? '升序' : '降序') + '</span>';
+    }
+
     // ------------------------------------------------------------ Toast
 
     var toastTimer = null;
@@ -100,6 +121,14 @@
         })(t0);
     }
 
+    /**
+     * 一个单行输入框。
+     *
+     * @param opts.allowEmpty 允许交上空值。备注这类「留空 = 清掉」的输入必须打开它：
+     *        不打开的话，用户把字删光再按确定，只会得到一个红框 —— 那条备注就永远清不掉。
+     * @param opts.emptyText  空着的时候确定键写什么。写成「取消备注」这种，
+     *        「这一下会做什么」就直接写在按钮上，不用再拿一行小字解释。
+     */
     function askText(opts) {
         return new Promise(function (resolve) {
             var modal = document.createElement('div');
@@ -128,13 +157,22 @@
                 dismiss(modal);
                 resolve(val);
             }
+
+            var okBtn = $('[data-x=ok]', modal);
+            function syncOk() {
+                if (!opts.allowEmpty) return;
+                okBtn.textContent = input.value.trim() ? '确定' : (opts.emptyText || '确定');
+            }
+            syncOk();
+
             modal.addEventListener('click', function (e) {
                 var x = e.target.getAttribute && e.target.getAttribute('data-x');
                 if (x === 'cancel') done(null);
                 if (x === 'ok') {
                     var v = input.value.trim();
-                    if (!v) { input.classList.add('invalid'); input.focus(); return; }
-                    if (opts.pattern && !opts.pattern.test(v)) {
+                    // 空值默认不算答案；备注那种「留空就是取消」的，交上去才是对的
+                    if (!v && !opts.allowEmpty) { input.classList.add('invalid'); input.focus(); return; }
+                    if (v && opts.pattern && !opts.pattern.test(v)) {
                         input.classList.add('invalid');
                         toast(opts.patternHint || '格式不对', true);
                         return;
@@ -142,7 +180,10 @@
                     done(v);
                 }
             });
-            input.addEventListener('input', function () { input.classList.remove('invalid'); });
+            input.addEventListener('input', function () {
+                input.classList.remove('invalid');
+                syncOk();
+            });
             input.addEventListener('keydown', function (e) { if (e.key === 'Enter') $('[data-x=ok]', modal).click(); });
             document.body.appendChild(modal);
             setTimeout(function () { input.focus(); }, 50);
@@ -245,7 +286,7 @@
     var navDepth = 0;         // 本次会话自己压了多少层，存在历史记录里
 
     /**
-     * 左上角那颗求 Star：**每次加载**先展开 10 秒把话说清楚，再收回成一颗 ⭐。
+     * 左上角那颗求 Star：**每次加载**先展开 10 秒把话说清楚，再收回成一颗星。
      *
      * 计时从「顶栏第一次出现」算起，而不是页面加载那一刻 —— 顶栏在登录页是藏起来的，
      * 从加载就开始计时的话，登录慢一点的人永远看不到那句说明。
@@ -759,7 +800,7 @@
         adminFilter = defaultAdminFilter();
         $('#admin-user-filter').value = '';
         $('#admin-sort').value = adminFilter.sort;
-        $('#admin-sort-dir').textContent = '↓ 降序';
+        $('#admin-sort-dir').innerHTML = sortDirHtml(adminFilter.dir);
         $$('#admin-status button').forEach(function (b) {
             b.classList.toggle('on', b.getAttribute('data-status') === 'all');
         });
@@ -976,7 +1017,7 @@
 
         $('#admin-sort-dir').addEventListener('click', function () {
             adminFilter.dir = adminFilter.dir === 'asc' ? 'desc' : 'asc';
-            $('#admin-sort-dir').textContent = adminFilter.dir === 'asc' ? '↑ 升序' : '↓ 降序';
+            $('#admin-sort-dir').innerHTML = sortDirHtml(adminFilter.dir);
             applyAdminFilter();
         });
 
@@ -1212,7 +1253,7 @@
                 '<div class="sub">' + (g.shareCode ? '邀请码 ' + esc(g.shareCode) + ' · ' : '') +
                 g.memberCount + ' 人' +
                 (g.isCreator ? ' · 你是群主' : '') + '</div></div>' +
-                '<span class="chev">›</span></button>';
+                icon('chevron-right', 'chev') + '</button>';
         }).join('');
         $$('#home-groups .item').forEach(function (el) {
             el.addEventListener('click', function () { openGroup(el.getAttribute('data-code')); });
@@ -1405,7 +1446,9 @@
         $('#btn-create-group').addEventListener('click', async function () {
             var name = await askText({
                 title: '创建群组', placeholder: '群组名（选填）', maxlength: 20,
-                hint: '留空就叫「我的组团」。创建后会生成 8 位邀请码。'
+                hint: '留空就叫「我的组团」。创建后会生成 8 位邀请码。',
+                allowEmpty: true,
+                emptyText: '用默认名'
             });
             if (name === null) return;
             try {
@@ -1708,7 +1751,7 @@
 
     function displayName(m) { return nameParts(m).shown; }
 
-    /** 给 TA 起/改/清备注。传空字符串即取消 */
+    /** 给 TA 起/改/清备注。交上空串就是取消 —— 所以这里必须允许空值 */
     async function editRemark(m) {
         var cur = (state.me && state.me.remarks && state.me.remarks[m.id]) || '';
         var name = await askText({
@@ -1716,7 +1759,9 @@
             hint: '只有你自己看得见，别人看到的名字不受影响。留空就是取消备注。',
             placeholder: m.nickname,
             value: cur,
-            maxlength: 12
+            maxlength: 12,
+            allowEmpty: true,
+            emptyText: '取消备注'
         });
         if (name == null) return;
         if (name === cur) return;
@@ -1742,7 +1787,9 @@
                   '只有一点：别人自己给你起过备注的话，他那边还是显示他的备注。',
             placeholder: state.me.nickname,
             value: cur,
-            maxlength: 12
+            maxlength: 12,
+            allowEmpty: true,
+            emptyText: '恢复用昵称'
         });
         if (name == null || name === cur) return;
         try {
@@ -1787,7 +1834,7 @@
             '<button class="row-note" data-note="' + esc(m.id) + '">备注</button>' +
             (canRemove ? '<button class="row-remove" data-remove="' + esc(m.id) + '">移除</button>' : '') +
             '</div>' +
-            '<span class="chev">›</span></div>';
+            icon('chevron-right', 'chev') + '</div>';
     }
 
     function renderGroup() {
@@ -2306,17 +2353,19 @@
      *          所以只能告诉他去找谁，别让人在那儿干等
      */
     function renderInviteEmpty(isOwner) {
-        var emoji = $('#invite-empty-emoji');
+        var mark = $('#invite-empty-icon');
         var text = $('#invite-empty-text');
         var btn = $('#btn-invite-create');
         if (!text) return;
         if (isOwner) {
-            if (emoji) emoji.textContent = '🔗';
+            // 群主看到的是「你能当场生成」：票上带加号
+            if (mark) mark.innerHTML = icon('ticket-plus');
             text.innerHTML = '这个群现在没有任何分享链接，谁也进不来。<br>' +
                 '链接可以随时收回、也可以随时重发，所以别怕发出去。';
             if (btn) btn.hidden = false;
         } else {
-            if (emoji) emoji.textContent = '🫥';
+            // 成员看到的是一张用不了的票：他本来就无权发新的
+            if (mark) mark.innerHTML = icon('ticket-x');
             text.innerHTML = '群主似乎没有分享他的群群~<br>' +
                 '想进来的同学，让 TA 找群主要一条 —— TA 那边随手就能生成，' +
                 '你负责把人喊来就好 (๑•̀ㅂ•́)و✧';
@@ -2828,7 +2877,13 @@
         var ta = state.compareWith;
         if (!me || !ta) return;
 
-        $('#compare-title').textContent = me.nickname + ' ↔ ' + displayName(ta);
+        // 两个人名中间放一枚双向箭头：比纯文字更像「比一比」，
+        // 也顺手替掉了原来那个 ↔ 字符（图标统一走 sprite）。
+        // 名字各包一层 span：长度不可控，用 flex + 省略号兜住
+        $('#compare-title').innerHTML =
+            '<span class="cmp-name">' + esc(me.nickname) + '</span>' +
+            icon('arrow-left-right', 'cmp-arrow') +
+            '<span class="cmp-name">' + esc(displayName(ta)) + '</span>';
 
         var win = buildWindow([me.courses || [], ta.courses || []]);
         if (state.weekIndex == null || state.weekIndex > win.weekCount) {
@@ -3180,7 +3235,8 @@
         // 手机浏览器的地址栏颜色跟着走
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', t === 'dark' ? '#000000' : '#f2f2f7');
-        $('#theme-icon').textContent = t === 'dark' ? '☀️' : '🌙';
+        // 深色下给太阳（点一下切回浅色），浅色下给月亮
+        $('#theme-icon').innerHTML = icon(t === 'dark' ? 'sun' : 'moon');
     }
 
     function initTheme() {

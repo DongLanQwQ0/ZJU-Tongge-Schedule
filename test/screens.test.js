@@ -916,7 +916,10 @@ test('首页群组列表 -> 群组页 -> 比对页，一路点得通', async () 
     a.click(rows[0]);
     await tick(350);
     assert.equal(a.activeScreen(), 'compare');
-    assert.match(a.el('#compare-title').textContent, /↔/);
+    // 两个人名之间的分隔不再是 ↔ 字符，而是 Lucide 图标（前端不许自己画符号）
+    assert.match(a.el('#compare-title').innerHTML, /#i-arrow-left-right/, '中间应当是一枚双向箭头图标');
+    assert.ok(a.el('#compare-title').textContent.includes(owner.nickname) &&
+        a.el('#compare-title').textContent.includes(mate.nickname), '两个人的名字都要在标题里');
     assert.match(a.el('#compare-stats').textContent, /第 \d+ 周/);
 });
 
@@ -1332,6 +1335,108 @@ test('转让群主：选人框取消 / 密码框取消，都不发请求', async
     await tick(300);
     assert.equal(await creatorId(), owner.id, '密码那步取消也不发请求');
     assert.equal(a.el('#btn-transfer-group').hidden, false, '界面上也还是群主');
+});
+
+test('备注：留空就是取消 —— 空值也得能交上去', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '备注群' } });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+
+    // 备注按钮自带对方 id，比按昵称找行稳
+    const noteBtn = () => a.all('#group-members [data-note]')
+        .find((b) => b.getAttribute('data-note') === mate.id);
+    const myRemarks = async () => (await raw('/api/me', { token: owner.token })).body.remarks || {};
+
+    assert.ok(noteBtn(), '群主应当看得到给 TA 起备注的入口');
+    a.click(noteBtn());
+    await tick(50);
+
+    let box = modalWith(a, '[data-x="ok"]');
+    let ok = box.querySelector('[data-x="ok"]');
+    // 备注是空的，这一下按下去会做什么，得写在按钮上
+    assert.equal(ok.textContent, '取消备注', '空着的时候按钮要说清会取消备注');
+
+    const input = box.querySelector('input');
+    input.value = '小灰灰';
+    input.dispatch('input', {});
+    assert.equal(ok.textContent, '确定', '填上名字就回到「确定」');
+    a.click(ok);
+    await tick(300);
+
+    assert.equal((await myRemarks())[mate.id], '小灰灰', '备注应当写进去');
+    assert.ok(a.el('#group-members').textContent.includes('小灰灰'), '成员行上显示备注名');
+
+    // 再点开，把字删光再交 —— 这就是「取消备注」那条路，以前会被 invalid 挡回去
+    a.click(noteBtn());
+    await tick(50);
+    box = modalWith(a, '[data-x="ok"]');
+    const input2 = box.querySelector('input');
+    assert.equal(input2.value, '小灰灰', '再点开时应当带着当前备注');
+    input2.value = '   ';                       // 全是空白也算空
+    input2.dispatch('input', {});
+    assert.equal(box.querySelector('[data-x="ok"]').textContent, '取消备注');
+    a.click(box.querySelector('[data-x="ok"]'));
+    await tick(300);
+
+    assert.equal(mate.id in (await myRemarks()), false, '留空提交要把备注删掉');
+    assert.ok(!a.el('#group-members').textContent.includes('小灰灰'), '成员行要回到昵称');
+});
+
+test('备注自己：留空恢复昵称，按钮上写清「恢复用昵称」', async () => {
+    const u = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: u.token, body: { name: '对外备注群' } });
+    const a = await started(base, { token: u.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+
+    a.click(a.all('#group-members .row-self-note')[0]);
+    await tick(50);
+    let box = modalWith(a, '[data-x="ok"]');
+    const input = box.querySelector('input');
+    input.value = '三班的小灰';
+    input.dispatch('input', {});
+    a.click(box.querySelector('[data-x="ok"]'));
+    await tick(350);
+    assert.equal(a.el('#group-members').textContent.includes('三班的小灰'), true, '行上应当用对外备注');
+
+    a.click(a.all('#group-members .row-self-note')[0]);
+    await tick(50);
+    box = modalWith(a, '[data-x="ok"]');
+    const input2 = box.querySelector('input');
+    input2.value = '';
+    input2.dispatch('input', {});
+    assert.equal(box.querySelector('[data-x="ok"]').textContent, '恢复用昵称');
+    a.click(box.querySelector('[data-x="ok"]'));
+    await tick(350);
+
+    const detail = await raw(`/api/groups/${g.body.code}`, { token: u.token });
+    assert.equal(detail.body.members[0].selfRemark, '', '留空提交要把对外备注清掉');
+});
+
+test('创建群组：名字留空也能交，服务端用默认名兜底', async () => {
+    const u = await user();
+    const a = await started(base, { token: u.token });
+
+    a.click('#btn-create-group');
+    await tick(50);
+    const box = modalWith(a, '[data-x="ok"]');
+    const ok = box.querySelector('[data-x="ok"]');
+    assert.equal(ok.textContent, '用默认名', '空着的时候按钮要说清会发生什么');
+
+    a.click(ok);                        // 一个字都不填
+    await tick(400);
+
+    const groups = (await raw('/api/me/groups', { token: u.token })).body.groups;
+    assert.equal(groups.length, 1, '应当把群建出来');
+    assert.equal(groups[0].name, '我的组团', '留空用默认名，而不是被前端拦下');
+    assert.ok(await until(() => a.activeScreen() === 'group'), '建完直接进群组页');
 });
 
 test('分享：菜单里那一项会把站点地址复制出来（垫片里没有系统分享面板）', async () => {

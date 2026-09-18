@@ -48,25 +48,58 @@
 </head>
 <body>
 
+<!-- 装饰背景：一张夜景照片（光球与尖塔）。只在深色主题显示，见 style.css 的 .bg-photo。
+     单独一层固定元素，不吃点击、不参与布局；关掉它（换主题）时页面布局一点都不动。 -->
+<div class="bg-photo" aria-hidden="true"></div>
+
+<!-- 图标系统：Lucide（24×24 线性、2px 描边、圆头圆角）。
+     路径只在这里存一份，静态标记与 app.js 动态渲染都引用同一个 #i-*。
+     内联而不是引 CDN 或图标字体：站点保持「拖下来就能跑」，也不会有字形闪烁。
+     新增图标：往下面加一条 <symbol>，名字与 lucide.dev 上的图标名一致。 -->
+<svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-chevron-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18l-6-6l6-6"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18l6-6l-6-6"/></symbol>
+    <symbol id="i-ellipsis" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.12 2.12 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.12 2.12 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.12 2.12 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.12 2.12 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.12 2.12 0 0 0 1.597-1.16z"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/></symbol>
+    <symbol id="i-log-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 17l5-5l-5-5m5 5H9m0 9H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></symbol>
+    <symbol id="i-graduation-cap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0zM22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7v14"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+    <symbol id="i-ticket-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Zm7 3h6m-3-3v6"/></symbol>
+    <symbol id="i-ticket-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Zm7.5 5.5l5-5m-5 0l5 5"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z"/><circle cx="12" cy="13" r="3"/></symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594zM20 2v4m2-2h-4"/><circle cx="4" cy="20" r="2"/></symbol>
+    <symbol id="i-flask-conical" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2M6.453 15h11.094M8.5 2h7"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><path d="M6 6h.01M6 18h.01"/></symbol>
+    <symbol id="i-arrow-down-wide-narrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 16l4 4l4-4m-4 4V4m4 0h10M11 8h7m-7 4h4"/></symbol>
+    <symbol id="i-arrow-up-narrow-wide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8l4-4l4 4M7 4v16m4-8h4m-4 4h7m-7 4h10"/></symbol>
+    <symbol id="i-arrow-left-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3L4 7l4 4M4 7h16m-4 14l4-4l-4-4m4 4H4"/></symbol>
+</svg>
+
 <header class="topbar" id="topbar" hidden>
     <!-- 左上角：返回键在最左（子页面才出现），求 Star 紧挨着它右边 —— 这样展开/收起
          时返回键不会被推着走。展开 / 收起由 app.js 的 revealStar() 控制，
          样式见 style.css 的 .star-btn -->
-    <button class="icon-btn" id="btn-back" hidden title="返回" aria-label="返回"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M15 5 L9 12 L15 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-    <a class="icon-btn star-btn" id="btn-star" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule" target="_blank" rel="noopener noreferrer" title="去 GitHub 点个 Star ⭐"><span aria-hidden="true">⭐</span><span class="star-text">求个 Star 🥺</span></a>
+    <button class="icon-btn" id="btn-back" hidden title="返回" aria-label="返回"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-chevron-left"></use></svg></button>
+    <a class="icon-btn star-btn" id="btn-star" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule" target="_blank" rel="noopener noreferrer" title="去 GitHub 点个 Star"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-star"></use></svg><span class="star-text">求个 Star</span></a>
     <h1 id="topbar-title">同格</h1>
     <span class="who" id="topbar-who"></span>
     <!-- 「管理 / 主题 / 退出」原来是三颗并排的小圆点，手机上又挤又容易点错，
-         现在收进一个「更多」菜单：点 ⋯ 展开，选完一项 / 点别处 / 按 Esc 都收起 -->
-    <button class="icon-btn" id="btn-more" title="更多" aria-label="更多" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><circle cx="5.5" cy="12" r="1.9" fill="currentColor"/><circle cx="12" cy="12" r="1.9" fill="currentColor"/><circle cx="18.5" cy="12" r="1.9" fill="currentColor"/></svg></button>
+         现在收进一个「更多」菜单：点这颗按钮展开，选完一项 / 点别处 / 按 Esc 都收起 -->
+    <button class="icon-btn" id="btn-more" title="更多" aria-label="更多" aria-haspopup="true" aria-expanded="false"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-ellipsis"></use></svg></button>
     <div class="more-menu" id="more-menu" hidden>
-        <button class="menu-item" id="btn-account"><span class="menu-ico">👤</span>账号</button>
-        <button class="menu-item" id="btn-share"><span class="menu-ico">🔗</span>分享给同学</button>
-        <button class="menu-item" id="btn-theme"><span class="menu-ico" id="theme-icon">🌙</span>切换深色 / 浅色</button>
-        <button class="menu-item" id="btn-admin" hidden><span class="menu-ico">🛠</span>管理</button>
+        <button class="menu-item" id="btn-account"><span class="menu-ico"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-user"></use></svg></span>账号</button>
+        <button class="menu-item" id="btn-share"><span class="menu-ico"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-link"></use></svg></span>分享给同学</button>
+        <button class="menu-item" id="btn-theme"><span class="menu-ico" id="theme-icon"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-moon"></use></svg></span>切换深色 / 浅色</button>
+        <button class="menu-item" id="btn-admin" hidden><span class="menu-ico"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-wrench"></use></svg></span>管理</button>
         <!-- 退出不加 .danger：它是可逆的（重新登录就回来），红色留给不可逆的注销。
              注销也搬出了这个菜单 —— 见 screen-account -->
-        <button class="menu-item" id="btn-logout"><span class="menu-ico">⎋</span>退出登录</button>
+        <button class="menu-item" id="btn-logout"><span class="menu-ico"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-log-out"></use></svg></span>退出登录</button>
     </div>
 </header>
 
@@ -74,8 +107,10 @@
 
 <!-- ==================================================== 登录 / 注册 -->
 <section class="screen" id="screen-auth">
-    <div style="text-align:center;padding:34px 0 22px">
-        <div style="font-size:46px">🎓</div>
+    <div class="auth-hero">
+        <!-- 一枚方角渐变徽标：把「同格」两个字前面的位置留给图形，
+             比裸放一个 46px 的表情稳，深浅两套主题都不用单独调 -->
+        <div class="auth-mark" aria-hidden="true"><svg class="ico" focusable="false"><use href="#i-graduation-cap"></use></svg></div>
         <div class="auth-brand">同格</div>
         <h1 class="auth-tagline">与一个或一群有趣的人同行</h1>
     </div>
@@ -147,7 +182,7 @@
     <div class="card">
         <h2>创建 / 加入群组</h2>
         <div class="stack">
-            <button class="btn" id="btn-create-group">＋ 创建群组</button>
+            <button class="btn btn-ico" id="btn-create-group"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-plus"></use></svg>创建群组</button>
             <button class="btn secondary" id="btn-join-group">用邀请码加入群组</button>
         </div>
     </div>
@@ -172,7 +207,7 @@
         <div class="stats" id="admin-stats"></div>
         <!-- 统计是「观察」，管理页是「操作台」（筛账号、删号、解散群）—— 使用节奏不一样，
              所以单开一屏。入口放这儿：反正只有管理员进得来 -->
-        <button class="btn ghost small" id="btn-admin-stats" style="margin-top:12px">看活跃度统计 ›</button>
+        <button class="btn ghost small btn-ico" id="btn-admin-stats" style="margin-top:12px">看活跃度统计<svg class="ico" aria-hidden="true" focusable="false"><use href="#i-chevron-right"></use></svg></button>
     </div>
 
     <div class="card">
@@ -197,7 +232,7 @@
                 <option value="idleDays">按没露面天数</option>
                 <option value="nickname">按昵称</option>
             </select>
-            <button class="btn ghost small" id="admin-sort-dir">↓ 降序</button>
+            <button class="btn ghost small btn-ico" id="admin-sort-dir"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-arrow-down-wide-narrow"></use></svg><span>降序</span></button>
             <button class="btn ghost small" id="admin-more-toggle">更多筛选</button>
         </div>
 
@@ -315,7 +350,7 @@
 
         <!-- 群主关掉「成员分享」之后，成员这边换上这一块（卡片留着，只换内容） -->
         <div class="invite-note" id="invite-closed" hidden>
-            <div class="closed-emoji">🔒</div>
+            <div class="note-mark" aria-hidden="true"><svg class="ico" focusable="false"><use href="#i-lock"></use></svg></div>
             <p>群主关掉了「成员分享」<br>
                 想让同学进来？用群主发出来的那条链接，或者直接找他要一条 ——<br>
                 他那边随时能生成。你负责把人喊来，码的事交给群主 (๑•̀ㅂ•́)و✧</p>
@@ -325,7 +360,7 @@
              群主看到的是出口（当场生成一条），成员看到的是「找群主要一条」。
              这张卡片绝不能是个死胡同 —— 那正是这次要修的毛病 -->
         <div class="invite-note" id="invite-empty" hidden>
-            <div class="closed-emoji" id="invite-empty-emoji">🫥</div>
+            <div class="note-mark" id="invite-empty-icon" aria-hidden="true"><svg class="ico" focusable="false"><use href="#i-ticket-x"></use></svg></div>
             <p id="invite-empty-text"></p>
             <button class="btn small" id="btn-invite-create" hidden>生成一条邀请链接</button>
         </div>
@@ -410,7 +445,7 @@
             <span>备注名（选填，只你自己看得见）</span>
             <input class="input" id="inv-label" maxlength="12" placeholder="比如：给 3 班的">
         </label>
-        <button class="btn" id="btn-inv-gen" style="margin-top:10px">＋ 生成一条新链接</button>
+        <button class="btn btn-ico" id="btn-inv-gen" style="margin-top:10px"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-plus"></use></svg>生成一条新链接</button>
     </div>
 
     <div class="card">
@@ -440,7 +475,7 @@
                     <div class="title">修改密码</div>
                     <div class="sub">改完之后，其他设备上的登录会全部失效。</div>
                 </div>
-                <span class="chev">›</span>
+                <svg class="ico chev" aria-hidden="true" focusable="false"><use href="#i-chevron-right"></use></svg>
             </button>
         </div>
     </div>
@@ -484,7 +519,7 @@
     </div>
 
     <div class="card" style="margin-top:14px">
-        <button class="btn" id="btn-export">📸 保存课表截图</button>
+        <button class="btn btn-ico" id="btn-export"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-camera"></use></svg>保存课表截图</button>
         <p class="tiny" style="text-align:center;margin-top:8px">
             导出<b>全学期</b>课表（含单双周），与所选周次无关。
         </p>
@@ -513,7 +548,7 @@
             <input class="input" id="local-name-a" maxlength="10" placeholder="我的名字（选填）">
             <input class="input" id="local-name-b" maxlength="10" placeholder="TA 的名字（选填）">
         </div>
-        <button class="btn" id="btn-local-run">🚀 生成比对课表</button>
+        <button class="btn btn-ico" id="btn-local-run"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-sparkles"></use></svg>生成比对课表</button>
     </div>
 
     <div class="legend card" id="local-legend" hidden>
@@ -532,7 +567,7 @@
         <table class="schedule sticky-head" id="local-table"></table>
     </div>
     <div class="card" id="local-export-card" hidden style="margin-top:14px">
-        <button class="btn" id="btn-local-export">📸 保存课表截图</button>
+        <button class="btn btn-ico" id="btn-local-export"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-camera"></use></svg>保存课表截图</button>
     </div>
 </section>
 
@@ -544,8 +579,8 @@
     <div class="foot-lines">
         <div class="foot-sign">Author: DongLanQwQ</div>
         <div class="foot-sub"><s>Coauthor: 𝗛 𝗭 𝗥</s> <b class="foot-copig">CoPig：𝗛 ㊗️ 𝗥</b></div>
-        <div class="foot-sub">鸣谢 𝗛 𝗭 𝗥 的 🥔 服务器</div>
-        <div class="foot-sub"><a class="foot-star" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule" target="_blank" rel="noopener noreferrer">⭐ 觉得还行？去 GitHub 点个 Star 🥺</a></div>
+        <div class="foot-sub foot-credit"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-server"></use></svg>鸣谢 𝗛 𝗭 𝗥 的 🥔 服务器</div>
+        <div class="foot-sub"><a class="foot-star" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule" target="_blank" rel="noopener noreferrer"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-star"></use></svg>觉得还行？去 GitHub 点个 Star</a></div>
         <!-- 版本号（灰字）：内容由 app.js 从 /api/meta 取，服务端读的是
              package.json 与构建时的提交号 —— 所以这行字说的是「此刻在跑的那一版」，
              不是页面里写死的字符串。取不到就一直空着（默认 hidden），
@@ -560,7 +595,7 @@
 <!-- 内测提示：每台设备首次打开时弹一次 -->
 <div class="modal" id="beta-modal" hidden>
     <div class="inner beta">
-        <div class="beta-emoji">🐣</div>
+        <div class="note-mark beta-mark" aria-hidden="true"><svg class="ico" focusable="false"><use href="#i-flask-conical"></use></svg></div>
         <h2>内测中，别嫌弃呀</h2>
         <p>
             一个人搓的，难免有点小 bug (´･ω･`)<br>
