@@ -578,6 +578,161 @@
         return bits.join(' · ');
     }
 
+    // ------------------------------------------------------------ 管理页筛选
+
+    /**
+     * 管理页的筛选与排序状态。
+     *
+     * 全部在浏览器里算：/api/admin/overview 本来就把全部账号、连同 regAt /
+     * lastLoginAt / loginCount / idleDays / courseCount / admin / suspect / dormant
+     * 一次性发过来了，再往服务端加查询参数只会给每次输入加一个来回。
+     */
+    var adminFilter = defaultAdminFilter();
+
+    function defaultAdminFilter() {
+        return {
+            q: '',
+            status: 'all',      // all | admin | suspect | dormant | nocourse | hascourse
+            sort: 'regAt',
+            dir: 'desc',        // 默认最新注册在前：查批量注册时这个顺序才有用
+            regFrom: '', regTo: '',
+            idleMin: '',
+            loginMin: '', loginMax: '',
+            courseMin: '', courseMax: ''
+        };
+    }
+
+    /** 输入框里的数字：空字符串是「不限」，不是 0 —— 用 Number('') 会得到 0 */
+    function parseNum(v) {
+        var s = String(v == null ? '' : v).trim();
+        if (!s) return null;
+        var n = Number(s);
+        return isFinite(n) ? n : null;
+    }
+
+    /**
+     * 'YYYY-MM-DD' -> 当天 00:00 的**本地**时间戳。
+     *
+     * 不能用 new Date('2026-09-15')：那会被解析成 UTC 午夜。东八区下，
+     * 9 月 15 日 00:00–08:00 注册的账号会落到这个值之前，被错误地排除在
+     * 「9 月 15 日」之外 —— 而那批深夜注册恰恰是最该被筛出来的。
+     */
+    function dayStart(s) {
+        var p = String(s || '').split('-');
+        if (p.length !== 3) return null;
+        var d = new Date(+p[0], +p[1] - 1, +p[2]);
+        return isNaN(d.getTime()) ? null : d.getTime();
+    }
+
+    /** 区间判定：min > max 就交换。填反了意思很清楚，不该变成一个错误态 */
+    function inRange(v, min, max) {
+        var lo = min, hi = max;
+        if (lo != null && hi != null && lo > hi) { var t = lo; lo = hi; hi = t; }
+        if (lo != null && v < lo) return false;
+        if (hi != null && v > hi) return false;
+        return true;
+    }
+
+    var ADMIN_SORT_KEY = {
+        regAt: function (u) { return u.regAt || 0; },
+        lastLoginAt: function (u) { return u.lastLoginAt || 0; },
+        loginCount: function (u) { return u.loginCount || 0; },
+        courseCount: function (u) { return u.courseCount || 0; },
+        idleDays: function (u) { return u.idleDays || 0; },
+        nickname: function (u) { return u.nickname || ''; }
+    };
+
+    /** 有没有一条筛选是生效的 —— 决定列表要不要关掉入场动画 */
+    function adminFilterActive() {
+        var f = adminFilter;
+        return !!(f.q || f.status !== 'all' || f.regFrom || f.regTo ||
+            parseNum(f.idleMin) != null || parseNum(f.loginMin) != null ||
+            parseNum(f.loginMax) != null || parseNum(f.courseMin) != null ||
+            parseNum(f.courseMax) != null);
+    }
+
+    /**
+     * 账号筛选 + 排序（纯函数，不改入参）。
+     *
+     * 账号列表、待清理、异常注册三处共用它 —— 同一个页面上只能有一套规则，
+     * 否则「按登录次数降序」之后账号列表重排了、下面那张卡片还是老顺序，
+     * 看上去就是随机的。
+     */
+    function filterAdminUsers(users) {
+        var f = adminFilter;
+        var q = f.q.toLowerCase();
+        var regFrom = dayStart(f.regFrom);
+        // 上界取当天最后一毫秒：选「到 9 月 18 日」时，18 日当天注册的必须算在内
+        var regToDay = dayStart(f.regTo);
+        var regTo = regToDay == null ? null : regToDay + 86400000 - 1;
+        var idleMin = parseNum(f.idleMin);
+        var loginMin = parseNum(f.loginMin), loginMax = parseNum(f.loginMax);
+        var courseMin = parseNum(f.courseMin), courseMax = parseNum(f.courseMax);
+
+        var out = users.filter(function (u) {
+            if (q) {
+                // 两个 IP 都认：可疑 IP 常常来自登录记录而不是注册记录，
+                // 只认一个的话「搜不到」会被读成「没这个人」
+                var hay = (u.nickname + ' ' + (u.regIp || '') + ' ' + (u.lastLoginIp || '')).toLowerCase();
+                if (hay.indexOf(q) < 0) return false;
+            }
+            if (f.status === 'admin' && !u.admin) return false;
+            if (f.status === 'suspect' && !u.suspect) return false;
+            if (f.status === 'dormant' && !u.dormant) return false;
+            if (f.status === 'nocourse' && (u.courseCount || 0) > 0) return false;
+            if (f.status === 'hascourse' && !((u.courseCount || 0) > 0)) return false;
+            if (regFrom != null && (u.regAt || 0) < regFrom) return false;
+            if (regTo != null && (u.regAt || 0) > regTo) return false;
+            if (idleMin != null && (u.idleDays || 0) < idleMin) return false;
+            if (!inRange(u.loginCount || 0, loginMin, loginMax)) return false;
+            if (!inRange(u.courseCount || 0, courseMin, courseMax)) return false;
+            return true;
+        });
+
+        var key = ADMIN_SORT_KEY[f.sort] || ADMIN_SORT_KEY.regAt;
+        var sign = f.dir === 'asc' ? 1 : -1;
+        out.sort(function (a, b) {                     // filter 返回的是新数组，排它不影响 state
+            var x = key(a), y = key(b);
+            if (typeof x === 'string' || typeof y === 'string') {
+                return String(x).localeCompare(String(y), 'zh') * sign;
+            }
+            if (x === y) return 0;                     // 并列时保持服务端原顺序（V8 稳定排序）
+            return (x < y ? -1 : 1) * sign;
+        });
+        return out;
+    }
+
+    /** 账号卡片：筛出多少个 / 一共多少个 */
+    function accountCountText(shown, total) {
+        if (!adminFilterActive() || shown === total) return total + ' 个';
+        return '筛出 ' + shown + ' 个 · 共 ' + total + ' 个';
+    }
+
+    /**
+     * 待清理 / 异常注册卡片：把**被筛掉**的数量说出来。
+     *
+     * 筛选态下光看一个「0 个」很容易读成「已经没有这种账号了」，
+     * 而真相是它们被当前筛选挡住了。这个数字就是用来堵这个误读的。
+     */
+    function subsetCountText(shown, total) {
+        if (!adminFilterActive() || shown === total) return shown + ' 个';
+        return '筛出 ' + shown + ' 个 · 另有 ' + (total - shown) + ' 个被当前筛选挡住';
+    }
+
+    /** 进页面和点「清空筛选」都走这里：筛选是临时的查看动作，不是配置 */
+    function resetAdminFilter() {
+        adminFilter = defaultAdminFilter();
+        $('#admin-user-filter').value = '';
+        $('#admin-sort').value = adminFilter.sort;
+        $('#admin-sort-dir').textContent = '↓ 降序';
+        $$('#admin-status button').forEach(function (b) {
+            b.classList.toggle('on', b.getAttribute('data-status') === 'all');
+        });
+        ['#admin-reg-from', '#admin-reg-to', '#admin-idle-min', '#admin-login-min',
+            '#admin-login-max', '#admin-course-min', '#admin-course-max'
+        ].forEach(function (sel) { $(sel).value = ''; });
+    }
+
     async function openAdmin() {
         show('admin', { title: '管理', back: goHome });
         $('#admin-users').innerHTML = '<div class="spinner">加载中…</div>';
@@ -591,7 +746,9 @@
             toast(e.message, true);
             return fallbackHome();
         }
-        $('#admin-user-filter').value = '';
+        // 筛选是临时的查看动作，不是配置：每次进来都从默认条件开始，
+        // 免得下次看到一份被上次筛过的列表却想不起来自己筛过什么
+        resetAdminFilter();
         renderAdmin();
     }
 
@@ -661,41 +818,14 @@
             ][i]);
         });
 
-        $('#admin-user-count').textContent = a.users.length + ' 个';
         $('#admin-group-count').textContent = a.groups.length + ' 个';
 
-        renderAdminUsers('');
+        renderAdminUsers();
+        renderAdminSubsets();
 
         $('#admin-groups').innerHTML = a.groups.length
             ? a.groups.map(adminGroupRow).join('')
             : '<div class="empty">一个群组都没有</div>';
-
-        var sc = $('#admin-suspect-card');
-        sc.hidden = !a.suspects.length;
-        $('#admin-suspect-count').textContent = a.suspects.length + ' 个';
-        $('#admin-suspects').innerHTML = a.suspects.map(function (s) {
-            return '<div class="item admin-row"><div class="grow">' +
-                '<div class="title">' + esc(s.nickname) + '</div>' +
-                '<div class="sub">' + esc(s.regIp) + ' · ' + esc(s.reason) +
-                ' · ' + fmtTime(s.createdAt) + '</div></div></div>';
-        }).join('');
-
-        // 待清理：只列出来给人看，不自动删 —— 到底是不是废号，人和人之间的
-        // 情况只有群主知道（有人就是注册了先放着，开学才传课表）
-        var dorm = a.users.filter(function (u) { return u.dormant; });
-        $('#admin-dormant-card').hidden = !dorm.length;
-        $('#admin-dormant-count').textContent = dorm.length + ' 个';
-        $('#admin-dormant').innerHTML = dorm.map(function (u) {
-            return '<div class="item admin-row"><div class="grow">' +
-                '<div class="title">' + esc(u.nickname) + '</div>' +
-                '<div class="sub">' + u.idleDays + ' 天没露面 · 注册 ' + fmtTime(u.regAt) +
-                (u.regIp ? ' · ' + esc(u.regIp) : '') + '</div>' +
-                '<div class="sub">' + (u.loginCount ? '登录 ' + u.loginCount + ' 次' : '无登录记录') +
-                ' · 一次课表都没传过</div>' +
-                '</div><div class="row-acts">' +
-                '<button class="row-remove" data-deluser="' + esc(u.id) + '">删除</button>' +
-                '</div></div>';
-        }).join('');
 
         $('#admin-audit').innerHTML = a.audit.length
             ? a.audit.map(function (e) {
@@ -707,20 +837,140 @@
             : '<div class="empty">还没有日志</div>';
     }
 
-    function renderAdminUsers(q) {
-        var users = (state.admin && state.admin.users) || [];
-        if (q) {
-            var k = q.toLowerCase();
-            users = users.filter(function (u) {
-                return u.nickname.toLowerCase().indexOf(k) >= 0 ||
-                    (u.regIp || '').indexOf(k) >= 0;
-            });
-        }
+    /** 列表重画时关掉入场动画：否则每敲一个字、每点一下胶囊都要重播一次 */
+    function setAdminListAnim() {
+        var on = adminFilterActive();
+        ['#admin-users', '#admin-dormant', '#admin-suspects'].forEach(function (sel) {
+            var el = $(sel);
+            if (el) el.classList.toggle('no-anim', on);
+        });
+    }
+
+    function renderAdminUsers() {
+        var all = (state.admin && state.admin.users) || [];
+        var users = filterAdminUsers(all);
         $('#admin-users').innerHTML = users.length
             ? users.map(adminUserRow).join('')
             : '<div class="empty">没有匹配的账号</div>';
-        // 边打字边筛的时候别让整个列表重播入场动画
-        $('#admin-users').classList.toggle('no-anim', !!q);
+        $('#admin-user-count').textContent = accountCountText(users.length, all.length);
+        setAdminListAnim();
+    }
+
+    /**
+     * 「待清理」和「异常注册」两张卡片。
+     *
+     * 它们跟着筛选一起缩，所以**什么时候藏卡片**要按全量判断，不能按筛完的结果：
+     * 否则筛「管理员」时这两张卡会整个消失，「被挡住 N 个」那句提示就没地方写了 ——
+     * 而那句提示正是为了不让人把「被筛掉了」读成「已经没有这种账号了」。
+     */
+    function renderAdminSubsets() {
+        var a = state.admin;
+        if (!a) return;
+        var users = filterAdminUsers(a.users);
+
+        // 待清理：只列出来给人看，不自动删 —— 到底是不是废号，人和人之间的
+        // 情况只有群主知道（有人就是注册了先放着，开学才传课表）
+        var dorm = users.filter(function (u) { return u.dormant; });
+        $('#admin-dormant-card').hidden = !a.stats.dormantCount;
+        $('#admin-dormant-count').textContent = subsetCountText(dorm.length, a.stats.dormantCount);
+        $('#admin-dormant').innerHTML = dorm.length
+            ? dorm.map(function (u) {
+                return '<div class="item admin-row"><div class="grow">' +
+                    '<div class="title">' + esc(u.nickname) + '</div>' +
+                    '<div class="sub">' + u.idleDays + ' 天没露面 · 注册 ' + fmtTime(u.regAt) +
+                    (u.regIp ? ' · ' + esc(u.regIp) : '') + '</div>' +
+                    '<div class="sub">' + (u.loginCount ? '登录 ' + u.loginCount + ' 次' : '无登录记录') +
+                    ' · 一次课表都没传过</div>' +
+                    '</div><div class="row-acts">' +
+                    '<button class="row-remove" data-deluser="' + esc(u.id) + '">删除</button>' +
+                    '</div></div>';
+            }).join('')
+            : '<div class="empty">当前筛选下没有待清理的账号</div>';
+
+        // 异常注册从 users 里派生，而不是用 a.suspects —— listSuspects() 返回的是
+        // 精简副本（只有昵称/IP/原因，没有 id、idleDays、courseCount），根本没法参与筛选。
+        // users[] 里本来就有 suspect + suspectReason，判定条件（u.suspect）完全一样。
+        var suspects = users.filter(function (u) { return u.suspect; });
+        $('#admin-suspect-card').hidden = !a.stats.suspectCount;
+        $('#admin-suspect-count').textContent = subsetCountText(suspects.length, a.stats.suspectCount);
+        $('#admin-suspects').innerHTML = suspects.length
+            ? suspects.map(function (s) {
+                return '<div class="item admin-row"><div class="grow">' +
+                    '<div class="title">' + esc(s.nickname) + '</div>' +
+                    '<div class="sub">' + esc(s.regIp || '（未记录）') + ' · ' +
+                    esc(s.suspectReason || '同 IP 集中注册') + ' · ' + fmtTime(s.regAt) + '</div></div></div>';
+            }).join('')
+            : '<div class="empty">当前筛选下没有待复核的账号</div>';
+    }
+
+    /**
+     * 筛选条件变了只重画「会被筛到的部分」。
+     *
+     * 不走整个 renderAdmin()：那会把概览那六个数字再 countUp 一遍、
+     * 审计日志再排一次 —— 每敲一个字都滚一次数字，纯属干扰。
+     */
+    function applyAdminFilter() {
+        renderAdminUsers();
+        renderAdminSubsets();
+    }
+
+    /** 筛选控件的接线。用到的容器都是 index.html 里的固定元素，绑一次就够 */
+    function initAdminFilter() {
+        $('#admin-user-filter').addEventListener('input', function (e) {
+            adminFilter.q = e.target.value.trim();
+            applyAdminFilter();
+        });
+
+        // 状态胶囊：和 #join-mode / #inv-ttl 同一套写法，挂在不会被替换的容器上
+        $('#admin-status').addEventListener('click', function (e) {
+            var btn = e.target.closest && e.target.closest('button[data-status]');
+            if (!btn) return;
+            var s = btn.getAttribute('data-status');
+            if (s === adminFilter.status) return;
+            adminFilter.status = s;
+            $$('#admin-status button').forEach(function (b) {
+                b.classList.toggle('on', b.getAttribute('data-status') === s);
+            });
+            applyAdminFilter();
+        });
+
+        $('#admin-sort').addEventListener('change', function (e) {
+            adminFilter.sort = e.target.value;
+            applyAdminFilter();
+        });
+
+        $('#admin-sort-dir').addEventListener('click', function () {
+            adminFilter.dir = adminFilter.dir === 'asc' ? 'desc' : 'asc';
+            $('#admin-sort-dir').textContent = adminFilter.dir === 'asc' ? '↑ 升序' : '↓ 降序';
+            applyAdminFilter();
+        });
+
+        $('#admin-more-toggle').addEventListener('click', function () {
+            var box = $('#admin-more');
+            box.hidden = !box.hidden;
+            $('#admin-more-toggle').textContent = box.hidden ? '更多筛选' : '收起筛选';
+        });
+
+        // 数字框边敲边筛；日期框浏览器只保证 change，所以两种事件都听
+        [['#admin-reg-from', 'regFrom'], ['#admin-reg-to', 'regTo'],
+            ['#admin-idle-min', 'idleMin'],
+            ['#admin-login-min', 'loginMin'], ['#admin-login-max', 'loginMax'],
+            ['#admin-course-min', 'courseMin'], ['#admin-course-max', 'courseMax']
+        ].forEach(function (pair) {
+            var el = $(pair[0]);
+            var onEdit = function (e) {
+                adminFilter[pair[1]] = e.target.value;
+                applyAdminFilter();
+            };
+            el.addEventListener('input', onEdit);
+            el.addEventListener('change', onEdit);
+        });
+
+        $('#admin-filter-reset').addEventListener('click', function () {
+            resetAdminFilter();
+            applyAdminFilter();
+            toast('筛选已清空');
+        });
     }
 
     /**
@@ -1003,9 +1253,7 @@
         $('#btn-open-admin').addEventListener('click', function () { openAdmin(); });
         $('#btn-admin').addEventListener('click', function () { openAdmin(); });
         initAdminDelegates();
-        $('#admin-user-filter').addEventListener('input', function (e) {
-            renderAdminUsers(e.target.value.trim());
-        });
+        initAdminFilter();
     }
 
     async function joinByCode(code) {

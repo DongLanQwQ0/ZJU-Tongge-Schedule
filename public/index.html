@@ -173,6 +173,57 @@
     <div class="card">
         <h2>账号 <span class="sub" id="admin-user-count"></span></h2>
         <input class="input" id="admin-user-filter" placeholder="按昵称或 IP 筛一下">
+
+        <div class="segmented wrap" id="admin-status">
+            <button data-status="all" class="on">全部</button>
+            <button data-status="admin">管理员</button>
+            <button data-status="suspect">待复核</button>
+            <button data-status="dormant">待清理</button>
+            <button data-status="nocourse">未传课表</button>
+            <button data-status="hascourse">已传课表</button>
+        </div>
+
+        <div class="filter-row">
+            <select class="input" id="admin-sort" aria-label="排序方式">
+                <option value="regAt">按注册时间</option>
+                <option value="lastLoginAt">按最后登录</option>
+                <option value="loginCount">按登录次数</option>
+                <option value="courseCount">按课表时段</option>
+                <option value="idleDays">按没露面天数</option>
+                <option value="nickname">按昵称</option>
+            </select>
+            <button class="btn ghost small" id="admin-sort-dir">↓ 降序</button>
+            <button class="btn ghost small" id="admin-more-toggle">更多筛选</button>
+        </div>
+
+        <div class="more-filters" id="admin-more" hidden>
+            <div class="frow">
+                <span class="flabel">注册时间</span>
+                <input class="input" type="date" id="admin-reg-from" aria-label="注册起始日期">
+                <span class="tilde">~</span>
+                <input class="input" type="date" id="admin-reg-to" aria-label="注册结束日期">
+            </div>
+            <div class="frow">
+                <span class="flabel">最近露面</span>
+                <span class="ftext">至少</span>
+                <input class="input" type="number" min="0" id="admin-idle-min" placeholder="不限" aria-label="至少多少天没露面">
+                <span class="ftext">天没来</span>
+            </div>
+            <div class="frow">
+                <span class="flabel">登录次数</span>
+                <input class="input" type="number" min="0" id="admin-login-min" placeholder="不限" aria-label="登录次数下限">
+                <span class="tilde">~</span>
+                <input class="input" type="number" min="0" id="admin-login-max" placeholder="不限" aria-label="登录次数上限">
+            </div>
+            <div class="frow">
+                <span class="flabel">课表时段</span>
+                <input class="input" type="number" min="0" id="admin-course-min" placeholder="不限" aria-label="课表时段下限">
+                <span class="tilde">~</span>
+                <input class="input" type="number" min="0" id="admin-course-max" placeholder="不限" aria-label="课表时段上限">
+            </div>
+            <button class="btn ghost small" id="admin-filter-reset">清空筛选</button>
+        </div>
+
         <div class="list" id="admin-users" style="margin-top:10px"></div>
     </div>
 

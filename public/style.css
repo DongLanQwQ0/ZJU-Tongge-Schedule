@@ -585,6 +585,30 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .admin-row .row-acts { display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; }
 .admin-row .row-acts button { width: 100%; text-align: center; }
 
+/* 账号筛选：状态胶囊 + 排序 + 「更多筛选」折叠区 */
+/* 六个胶囊在手机上横排会挤成一团，允许换行；宽度按内容给，不再平分 */
+.segmented.wrap { flex-wrap: wrap; margin: 10px 0; }
+.segmented.wrap button { flex: 1 1 auto; white-space: nowrap; }
+
+.filter-row { display: flex; gap: 8px; align-items: center; }
+.filter-row select {
+    flex: 1 1 auto; min-width: 0;
+    padding: 9px 11px; font-size: 14px;
+    border: 1px solid var(--field-border); border-radius: 10px;
+    background: var(--field-bg); color: var(--text);
+}
+.filter-row select:focus { border-color: var(--blue); outline: none; }
+/* 排序按钮和「更多筛选」都别被压扁，宽度随文字走 */
+.filter-row .btn { flex: 0 0 auto; }
+
+.more-filters { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.more-filters .btn { align-self: flex-start; }
+.frow { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.frow .flabel { flex: 0 0 56px; }
+.frow .ftext, .frow .tilde { flex: 0 0 auto; }
+/* 数字/日期框比正文输入框矮一档：这里一屏要放四行 */
+.frow .input { flex: 1 1 0; min-width: 0; padding: 7px 9px; font-size: 13px; }
+
 /* 邀请链接管理：左侧勾选框。点整行不勾选，必须点框本身 —— 免得误批量作废 */
 .inv-pick {
     flex: 0 0 auto;

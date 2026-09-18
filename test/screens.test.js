@@ -1309,3 +1309,327 @@ test('页脚版本号：服务端给什么就显示什么（连登录页都看�
     // 版本号来自服务端读的那份 package.json —— 页面里写死的那个字符串不算数
     assert.match(el.textContent, new RegExp('^v' + pkg.version.replace(/\./g, '\\.')));
 });
+
+// ---------------------------------------------------------------- 管理页筛选
+
+const COURSE2 = {
+    course: '线性代数', day: 3, startPeriod: 1, endPeriod: 2,
+    startTime: '08:00', endTime: '09:35', location: '紫金港西2-105',
+    dates: ['20260916', '20260923']
+};
+
+/**
+ * 管理页筛选自己一套干净的服务。
+ *
+ * 不复用共享实例：那边的账号是十几个用例堆出来的（同一个 IP 早就触发
+ * 「异常注册」整簇标记，全局列表里也全是别人造的人），而筛选用例需要
+ * 自己说了算的数据 —— 尤其是「什么时候注册的」「多少天没露面」，
+ * 只能直接改盘上的记录才造得出来。
+ */
+async function filterSetup() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-filter-'));
+    const s = await createServer({
+        vault: false, captcha: false, dataDir: dir, port: 0, skipCleanup: true,
+        limits: {
+            registerBurst: { windowMs: 60000, max: 1000, message: 'x' },
+            register: { windowMs: 3600000, max: 1000, message: 'x' },
+            loginFail: { windowMs: 600000, max: 1000, message: 'x' }
+        }
+    });
+    await new Promise((r) => s.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${s.address().port}`;
+
+    const call = async (pathname, opts = {}) => {
+        const headers = {};
+        if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+        if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+        const res = await globalThis.__realFetch(url + pathname, {
+            method: opts.method || 'GET', headers,
+            body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
+        });
+        return { status: res.status, body: await res.json().catch(() => null) };
+    };
+
+    let n = 0;
+    const mkUser = async (withCourses) => {
+        n += 1;
+        const nickname = `筛${n}`;
+        const r = await call('/api/register', { method: 'POST', body: { nickname, password: 'pw123456' } });
+        assert.equal(r.status, 200, JSON.stringify(r.body));
+        if (withCourses) {
+            await call('/api/me/courses', { method: 'PUT', token: r.body.token, body: { courses: [COURSE] } });
+        }
+        return { id: r.body.userId, nickname, token: r.body.token };
+    };
+
+    // 直接改盘上的账号记录。注册时间、最后活动都是服务端 now() 说了算的，
+    // 想造出「某天凌晨注册」「40 天没露面」只能改文件（server.test.js 里也这么干）。
+    const patchUsers = (fn) => {
+        const file = path.join(dir, 'users.json');
+        const db = JSON.parse(fs.readFileSync(file, 'utf8'));
+        fn(db.users);
+        fs.writeFileSync(file, JSON.stringify(db), 'utf8');
+    };
+
+    return {
+        dir, s, url, call, mkUser, patchUsers,
+        close: async () => { await new Promise((r) => s.close(r)); fs.rmSync(dir, { recursive: true, force: true }); }
+    };
+}
+
+/**
+ * 账号列表里现在有哪些昵称。
+ * 精确取 .title 而不是整行 textContent —— 否则「筛1」会误配到「筛12」。
+ */
+function listedNames(a) {
+    return a.all('#admin-users .item').map((r) => r.querySelector('.title').textContent);
+}
+
+/** 用某个 token 起一份 app 并进管理页。等 600ms：概览那六个数字要滚 420ms 才停 */
+async function openAdminAt(url, token) {
+    const a = await started(url, { token });
+    a.click('#btn-admin');
+    await tick(600);
+    assert.equal(a.activeScreen(), 'admin');
+    return a;
+}
+
+/** 状态胶囊的按钮 */
+function statusPill(a, s) {
+    return a.all('#admin-status button').find((b) => b.getAttribute('data-status') === s);
+}
+
+/** 造一个管理员；返回 { boss, a } */
+async function adminScene(t) {
+    const boss = await t.mkUser(true);
+    await t.s.store.setUserAdmin(boss.id, true);
+    return boss;
+}
+
+test('管理页筛选：状态胶囊只留对应的人，点回「全部」恢复', async () => {
+    const t = await filterSetup();
+    try {
+        const boss = await adminScene(t);
+        const withCourse = await t.mkUser(true);
+        const noCourse = await t.mkUser(false);
+
+        const a = await openAdminAt(t.url, boss.token);
+        assert.equal(listedNames(a).length, 3);
+
+        a.click(statusPill(a, 'hascourse'));
+        await tick(60);
+        assert.deepEqual(listedNames(a).sort(), [boss.nickname, withCourse.nickname].sort());
+        assert.equal(statusPill(a, 'hascourse')._classes.has('on'), true, '当前状态要标出来');
+        assert.equal(a.el('#admin-users')._classes.has('no-anim'), true, '筛选时关掉入场动画');
+
+        a.click(statusPill(a, 'nocourse'));
+        await tick(60);
+        assert.deepEqual(listedNames(a), [noCourse.nickname]);
+
+        a.click(statusPill(a, 'all'));
+        await tick(60);
+        assert.equal(listedNames(a).length, 3);
+        assert.equal(a.el('#admin-users')._classes.has('no-anim'), false, '清空后入场动画恢复');
+    } finally { await t.close(); }
+});
+
+test('管理页筛选：排序字段与升降序方向', async () => {
+    const t = await filterSetup();
+    try {
+        const boss = await adminScene(t);
+        const busy = await t.mkUser(true);
+        // 再登录两次 -> loginCount 3（注册本身算第一次）
+        for (let i = 0; i < 2; i++) {
+            const r = await t.call('/api/login', {
+                method: 'POST', body: { nickname: busy.nickname, password: 'pw123456' }
+            });
+            assert.equal(r.status, 200);
+        }
+
+        const a = await openAdminAt(t.url, boss.token);
+        // 默认：注册时间降序 -> 后注册的在前
+        assert.deepEqual(listedNames(a), [busy.nickname, boss.nickname]);
+
+        const sort = a.el('#admin-sort');
+        sort.value = 'loginCount';
+        sort.dispatch('change', {});
+        await tick(60);
+        assert.equal(listedNames(a)[0], busy.nickname, '降序时登录最多的在最前');
+
+        a.click('#admin-sort-dir');
+        await tick(60);
+        assert.match(a.el('#admin-sort-dir').textContent, /升序/, '按钮文字要跟着方向变');
+        assert.equal(listedNames(a)[0], boss.nickname, '升序时登录最少的在最前');
+    } finally { await t.close(); }
+});
+
+test('管理页筛选：注册时间按本地日算，当天凌晨注册的不能被漏掉', async () => {
+    const t = await filterSetup();
+    try {
+        const boss = await adminScene(t);
+        const early = await t.mkUser(false);
+        const late = await t.mkUser(false);
+        const before = await t.mkUser(false);
+
+        // 挑一个固定的过去日期，免得用例结果随「现在是几点」漂
+        t.patchUsers((users) => {
+            const set = (id, ts) => { users.find((x) => x.id === id).createdAt = ts; };
+            set(early.id, new Date(2026, 2, 10, 0, 30).getTime());    // 当天 00:30
+            set(late.id, new Date(2026, 2, 10, 23, 30).getTime());    // 当天 23:30
+            set(before.id, new Date(2026, 2, 9, 23, 30).getTime());   // 前一天
+        });
+
+        const a = await openAdminAt(t.url, boss.token);
+        a.click('#admin-more-toggle');
+        await tick(30);
+        assert.equal(a.el('#admin-more').hidden, false, '「更多筛选」要能展开');
+
+        for (const [sel, v] of [['#admin-reg-from', '2026-03-10'], ['#admin-reg-to', '2026-03-10']]) {
+            const el = a.el(sel);
+            el.value = v;
+            el.dispatch('change', {});
+            await tick(40);
+        }
+
+        const names = listedNames(a);
+        // 这条就是时区回归：用 new Date('2026-03-10') 解析会得到 UTC 午夜，
+        // 东八区下等于当天 08:00 —— 00:30 注册的这个账号会被漏掉
+        assert.ok(names.includes(early.nickname), '当天 00:30 注册的必须算在「当天」里');
+        assert.ok(names.includes(late.nickname), '当天 23:30 注册的也要算在「当天」里');
+        assert.equal(names.includes(before.nickname), false, '前一天注册的不该进来');
+        assert.equal(names.includes(boss.nickname), false, '注册时间不在区间里的都该出去');
+    } finally { await t.close(); }
+});
+
+test('管理页筛选：数字区间含边界，填反了自动交换', async () => {
+    const t = await filterSetup();
+    try {
+        const boss = await adminScene(t);          // 1 个时段
+        const one = await t.mkUser(true);          // 1 个时段
+        const two = await t.mkUser(true);
+        const none = await t.mkUser(false);        // 0 个时段
+        await t.call('/api/me/courses', { method: 'PUT', token: two.token, body: { courses: [COURSE, COURSE2] } });
+
+        const a = await openAdminAt(t.url, boss.token);
+        a.click('#admin-more-toggle');
+        await tick(30);
+
+        const setRange = async (min, max) => {
+            const lo = a.el('#admin-course-min'), hi = a.el('#admin-course-max');
+            lo.value = min; lo.dispatch('input', {});
+            hi.value = max; hi.dispatch('input', {});
+            await tick(60);
+        };
+
+        await setRange('1', '2');
+        const inRange = [boss.nickname, one.nickname, two.nickname].sort();
+        assert.deepEqual(listedNames(a).sort(), inRange, '边界值 1 和 2 都必须在结果里');
+
+        await setRange('2', '1');    // 填反
+        assert.deepEqual(listedNames(a).sort(), inRange, '填反了应当自动交换，结果与正着填一致');
+
+        await setRange('0', '0');
+        assert.deepEqual(listedNames(a), [none.nickname], '留空过的那一端不该被当成 0');
+    } finally { await t.close(); }
+});
+
+test('管理页筛选：搜索框也认最后登录 IP', async () => {
+    const t = await filterSetup();
+    try {
+        const boss = await adminScene(t);
+        const marked = await t.mkUser(false);
+        t.patchUsers((users) => {
+            users.find((x) => x.id === marked.id).lastLoginIp = '10.9.9.9';
+        });
+
+        const a = await openAdminAt(t.url, boss.token);
+        const box = a.el('#admin-user-filter');
+        box.value = '10.9.9.9';
+        box.dispatch('input', {});
+        await tick(60);
+
+        assert.deepEqual(listedNames(a), [marked.nickname],
+            '登录 IP 往往才是管理员手里那个可疑 IP，不能只认注册 IP');
+    } finally { await t.close(); }
+});
+
+test('管理页筛选：待清理/异常注册跟着筛，并把「被挡住」的数量说出来', async () => {
+    const t = await filterSetup();
+    try {
+        const boss = await adminScene(t);
+        const dormantA = await t.mkUser(false);
+        const dormantB = await t.mkUser(false);
+        const suspect = await t.mkUser(true);      // 有课表，所以不会被算成待清理
+
+        // 40 天没露面 + 一次课表都没传 = 待清理；再单独标一个待复核（它有课表）
+        const old = Date.now() - 40 * 86400000;
+        t.patchUsers((users) => {
+            for (const id of [dormantA.id, dormantB.id]) {
+                const u = users.find((x) => x.id === id);
+                u.createdAt = old;
+                u.lastLoginAt = old;
+            }
+            users.forEach((u) => { delete u.suspect; delete u.suspectReason; });
+            const s = users.find((x) => x.id === suspect.id);
+            s.suspect = true;
+            s.suspectReason = '同 IP 集中注册';
+        });
+
+        const a = await openAdminAt(t.url, boss.token);
+        assert.match(a.el('#admin-dormant-count').textContent, /2 个/);
+        assert.match(a.el('#admin-suspect-count').textContent, /1 个/);
+        // 概览：4 个账号 / 1 个管理员 / 2 个传了课表 / 0 个群 / 1 个待复核 / 2 个待清理
+        const stats = ['4', '1', '2', '0', '1', '2'];
+        assert.deepEqual(a.all('#admin-stats .stat b').map((b) => b.textContent), stats);
+
+        // 筛「已传课表」：两个没传课表的待清理账号被挡住
+        a.click(statusPill(a, 'hascourse'));
+        await tick(60);
+
+        assert.equal(a.el('#admin-dormant-card').hidden, false,
+            '被筛空也不该把整张卡片藏起来 —— 否则这句提示没地方写');
+        assert.match(a.el('#admin-dormant-count').textContent, /另有 2 个被当前筛选挡住/,
+            '「0 个」必须说清是被筛掉了，而不是已经没有这种账号了');
+        assert.equal(a.all('#admin-dormant .item').length, 0);
+        assert.equal(a.all('#admin-suspects .item').length, 1, '这个待复核账号传了课表，留了下来');
+
+        // 概览那六个数字是全站全量，不随筛选变
+        assert.deepEqual(a.all('#admin-stats .stat b').map((b) => b.textContent), stats,
+            '概览是「这个站现在什么状况」，跟着筛选变就没意义了');
+    } finally { await t.close(); }
+});
+
+test('管理页筛选：清空筛选恢复全量，且列表委托始终只有一份', async () => {
+    const t = await filterSetup();
+    try {
+        const boss = await adminScene(t);
+        await t.mkUser(false);
+        const a = await openAdminAt(t.url, boss.token);
+        const total = listedNames(a).length;
+
+        // 换着花样筛几轮
+        a.click(statusPill(a, 'admin'));
+        await tick(40);
+        a.click('#admin-more-toggle');
+        await tick(20);
+        const idle = a.el('#admin-idle-min');
+        idle.value = '30';
+        idle.dispatch('input', {});
+        await tick(40);
+        a.click('#admin-sort-dir');
+        await tick(40);
+        assert.equal(listedNames(a).length, 0, '30 天没露面的一个都没有');
+
+        a.click('#admin-filter-reset');
+        await tick(60);
+        assert.equal(listedNames(a).length, total, '清空筛选要恢复全量');
+        assert.equal(a.el('#admin-user-filter').value, '', '搜索框也要清掉');
+        assert.equal(statusPill(a, 'all')._classes.has('on'), true, '胶囊回到「全部」');
+        assert.equal(a.el('#admin-users')._classes.has('no-anim'), false);
+
+        // 委托只能有一份：重画多少次都不该再挂监听（历史上就是这么重复绑定弹两个框的）
+        assert.equal((a.el('#admin-users')._listeners.click || []).length, 1,
+            '筛选重画不该给列表再挂一份 click 委托');
+    } finally { await t.close(); }
+});
+
