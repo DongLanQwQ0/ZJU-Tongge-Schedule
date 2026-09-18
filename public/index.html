@@ -255,18 +255,28 @@
 <!-- ==================================================== 群组页 -->
 <section class="screen" id="screen-group">
     <div class="card invite" id="group-invite-card">
-        <div class="tiny">把邀请码或二维码发给同学</div>
-        <div class="code" id="group-code">······</div>
-        <div class="qr" id="group-qr"></div>
-        <div class="tiny" id="group-url" style="margin-top:10px;word-break:break-all"></div>
-        <div class="row" style="margin-top:12px">
-            <button class="btn secondary small" id="btn-copy-code" style="flex:1">复制邀请码</button>
-            <button class="btn secondary small" id="btn-copy-link" style="flex:1">复制链接</button>
-            <button class="btn secondary small" id="btn-zoom-qr" style="flex:1">放大二维码</button>
+        <div id="invite-share-box">
+            <div class="tiny">把邀请码或二维码发给同学</div>
+            <div class="code" id="group-code">······</div>
+            <div class="qr" id="group-qr"></div>
+            <div class="tiny" id="group-url" style="margin-top:10px;word-break:break-all"></div>
+            <div class="row" style="margin-top:12px">
+                <button class="btn secondary small" id="btn-copy-code" style="flex:1">复制邀请码</button>
+                <button class="btn secondary small" id="btn-copy-link" style="flex:1">复制链接</button>
+                <button class="btn secondary small" id="btn-zoom-qr" style="flex:1">放大二维码</button>
+            </div>
+
+            <!-- 这里显示的码是谁的、什么时候过期，都在这一行讲清楚 -->
+            <p class="tiny" id="group-current-note" style="margin-top:10px"></p>
         </div>
 
-        <!-- 这里显示的码是谁的、什么时候过期，都在这一行讲清楚 -->
-        <p class="tiny" id="group-current-note" style="margin-top:10px"></p>
+        <!-- 群主关掉「成员分享」之后，成员这边换上这一块（卡片留着，只换内容） -->
+        <div class="invite-closed" id="invite-closed" hidden>
+            <div class="closed-emoji">🔒</div>
+            <p>群主关掉了「成员分享」<br>
+                想让同学进来？用群主发出来的那条链接，或者直接找他要一条 ——<br>
+                他那边随时能生成。你负责把人喊来，码的事交给群主 (๑•̀ㅂ•́)و✧</p>
+        </div>
 
         <!-- 多个链接的管理搬到独立页面，这里只留一个入口 -->
         <button class="link-btn center" id="btn-manage-invites" style="margin-top:6px" hidden>
@@ -295,6 +305,13 @@
             <div class="segmented" id="join-mode">
                 <button data-mode="open" class="on">拿到链接就能进</button>
                 <button data-mode="approval">要我同意</button>
+            </div>
+        </label>
+        <label class="field">
+            <span>谁能分享邀请</span>
+            <div class="segmented" id="share-mode">
+                <button data-share="all" class="on">成员也能分享</button>
+                <button data-share="owner">只有我能分享</button>
             </div>
         </label>
     </div>

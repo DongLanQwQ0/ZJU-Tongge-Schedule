@@ -770,7 +770,7 @@ async function createServer(options = {}) {
             return detail;
         }],
 
-        // 群主改群组设置（入群方式 / 成员能否邀请）
+        // 群主改群组设置（入群方式 / 群名 / 成员能否分享邀请码）
         ['PUT', /^\/api\/groups\/(\d{6}|\d{8})\/settings$/, async (req, res, m) => {
             const { user } = await requireUser(req);
             const body = await readBody(req, res);

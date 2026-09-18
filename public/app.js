@@ -1166,10 +1166,17 @@
             return;
         }
         box.innerHTML = state.groups.map(function (g) {
+            // 群主关掉「成员分享」之后，成员连码都不该看到 —— 首页这张卡片也算。
+            // 否则一边说「只有群主能分享」，一边把码印在成员眼前，那开关就是假的。
+            // 注意 data-code 不能动：整张卡片就是靠它进群的。改的只是印出来的那行字。
+            // 条件是 isCreator || 开关没关，而不是直接 isCreator ——
+            // 默认开着时成员看得到码是上线前就有的行为，没理由顺手改掉
+            var canSeeCode = g.isCreator || g.memberShare !== false;
             return '<button class="item" data-code="' + esc(g.code) + '">' +
                 '<div class="grow"><div class="title">' + esc(g.name) +
                 (g.pending ? ' <span class="chip-lv nearby">等群主同意</span>' : '') + '</div>' +
-                '<div class="sub">邀请码 ' + esc(g.code) + ' · ' + g.memberCount + ' 人' +
+                '<div class="sub">' + (canSeeCode ? '邀请码 ' + esc(g.code) + ' · ' : '') +
+                g.memberCount + ' 人' +
                 (g.isCreator ? ' · 你是群主' : '') + '</div></div>' +
                 '<span class="chev">›</span></button>';
         }).join('');
@@ -1504,39 +1511,57 @@
         // 与其让他点了之后吃一个红字报错，不如直接把这颗按钮藏掉
         $('#btn-group-leave').hidden = iAmOwner;
 
-        // 邀请卡片：展示哪一枚码、有没有可用的码，都在这里定
-        var disp = currentDisplayCode();
-        var codeEl = $('#group-code');
-        var noteEl = $('#group-current-note');
-        var qrBox = $('#group-qr');
-        var urlEl = $('#group-url');
-        var canShare = !!disp;
+        // 邀请卡片：展示哪一枚码、有没有可用的码，都在这里定。
+        // 群主关掉「成员分享」之后，成员这边没有任何可分享的东西 ——
+        // 摆一个「——」加一张空二维码不像「没码」，像「页面坏了」，所以整块换掉。
+        // 卡片本身留着：它是群组页的一部分，凭空消失更让人摸不着头脑
+        var memberShareOff = !iAmOwner && g.memberShare === false;
+        var shareBox = $('#invite-share-box');
+        var closedBox = $('#invite-closed');
+        var canShare = false;
 
-        // 分享按钮在没有可用码时必须禁用 —— 否则用户会复制出一个打不开的链接
+        if (memberShareOff) {
+            shareBox.hidden = true;
+            closedBox.hidden = false;
+        } else {
+            shareBox.hidden = false;
+            closedBox.hidden = true;
+
+            var disp = currentDisplayCode();
+            var codeEl = $('#group-code');
+            var noteEl = $('#group-current-note');
+            var qrBox = $('#group-qr');
+            var urlEl = $('#group-url');
+            canShare = !!disp;
+
+            if (disp) {
+                codeEl.textContent = disp.code;
+                urlEl.hidden = false;
+                renderQr(disp.code);
+                // 讲清楚这个码是谁的、还能用多久
+                if (disp.isOwnerCode) {
+                    noteEl.textContent = '这是你自己的永久码，永不过期。发给同学的码在「管理邀请链接」里。';
+                } else if (disp.invite.expiresAt == null) {
+                    noteEl.textContent = '这条链接永久有效。';
+                } else {
+                    noteEl.textContent = '这条链接' + inviteStateText(disp.invite) + '。';
+                }
+            } else {
+                // 没有可用码：多半是群主发的链接都过期/作废了
+                codeEl.textContent = '——';
+                noteEl.textContent = '现在没有能用的邀请链接了。';
+                urlEl.hidden = true;
+                qrBox.innerHTML = '<div class="tiny">没有可用的邀请链接</div>';
+            }
+        }
+
+        // 分享按钮在没有可用码时必须禁用 —— 否则用户会复制出一个打不开的链接。
+        // 成员分享被关掉时 canShare 保持 false，这里自动兜住：哪怕上面哪个分支漏了，
+        // 也点不出一个能用的链接
         ['#btn-copy-code', '#btn-copy-link', '#btn-zoom-qr'].forEach(function (sel) {
             var b = $(sel);
             if (b) b.disabled = !canShare;
         });
-
-        if (disp) {
-            codeEl.textContent = disp.code;
-            urlEl.hidden = false;
-            renderQr(disp.code);
-            // 讲清楚这个码是谁的、还能用多久
-            if (disp.isOwnerCode) {
-                noteEl.textContent = '这是你自己的永久码，永不过期。发给同学的码在「管理邀请链接」里。';
-            } else if (disp.invite.expiresAt == null) {
-                noteEl.textContent = '这条链接永久有效。';
-            } else {
-                noteEl.textContent = '这条链接' + inviteStateText(disp.invite) + '。';
-            }
-        } else {
-            // 没有可用码：多半是群主发的链接都过期/作废了
-            codeEl.textContent = '——';
-            noteEl.textContent = '现在没有能用的邀请链接了。';
-            urlEl.hidden = true;
-            qrBox.innerHTML = '<div class="tiny">没有可用的邀请链接</div>';
-        }
         // 管理入口只有群主看得到；成员在邀请卡片上就能拿到能用的码
         $('#btn-manage-invites').hidden = !iAmOwner;
 
@@ -1644,6 +1669,11 @@
 
         $$('#join-mode button').forEach(function (b) {
             b.classList.toggle('on', b.getAttribute('data-mode') === g.joinMode);
+        });
+        // memberShare === false 才是关；缺字段的老群按开着显示（和服务端的默认值一致）
+        $$('#share-mode button').forEach(function (b) {
+            b.classList.toggle('on',
+                b.getAttribute('data-share') === (g.memberShare === false ? 'owner' : 'all'));
         });
     }
 
@@ -1817,6 +1847,20 @@
                 state.group = await API.groupDetail(state.group.code);
                 renderGroup();
                 toast(mode === 'approval' ? '以后要你同意才能进群' : '以后拿到链接就能直接进群');
+            } catch (err) { toast(err.message, true); }
+        });
+
+        // 成员能不能分享邀请码。关掉之后成员那边只看得到一句说明
+        $('#share-mode').addEventListener('click', async function (e) {
+            var btn = e.target.closest('button[data-share]');
+            if (!btn || !state.group) return;
+            var onlyOwner = btn.getAttribute('data-share') === 'owner';
+            if (onlyOwner === (state.group.memberShare === false)) return;
+            try {
+                await API.groupSettings(state.group.code, { memberShare: !onlyOwner });
+                state.group = await API.groupDetail(state.group.code);
+                renderGroup();
+                toast(onlyOwner ? '以后只有你能发邀请链接了' : '成员又能分享邀请链接了');
             } catch (err) { toast(err.message, true); }
         });
     }

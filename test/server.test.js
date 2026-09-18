@@ -352,6 +352,96 @@ test('群组设置：非法值、空 patch、已废弃字段都被挡', async ()
     assert.equal((await put({ memberCanInvite: false })).status, 400);
 });
 
+// ---------------------------------------------------------------- 成员分享开关
+
+/** 一个群 + 一个成员，外加改开关的快捷方式 */
+async function shareScene(tag) {
+    const owner = await api('/api/register', { method: 'POST', body: { nickname: tag + '群主', password: 'password1' } });
+    const mate = await api('/api/register', { method: 'POST', body: { nickname: tag + '成员', password: 'password1' } });
+    const code = (await api('/api/groups', { method: 'POST', token: owner.body.token, body: { name: tag + '群' } })).body.code;
+    await api(`/api/groups/${code}/join`, { method: 'POST', token: mate.body.token });
+    return {
+        owner, mate, code,
+        setShare: (on, token) => api(`/api/groups/${code}/settings`, {
+            method: 'PUT', token: token || owner.body.token, body: { memberShare: on }
+        }),
+        detail: (token) => api(`/api/groups/${code}`, { token })
+    };
+}
+
+test('成员分享：默认开着；没有这个字段的老群升级后也不变', async () => {
+    const s = await shareScene('默认分享');
+    await api(`/api/groups/${s.code}/invites`, { method: 'POST', token: s.owner.body.token, body: { ttl: 'never' } });
+
+    const asMember = await s.detail(s.mate.body.token);
+    assert.equal(asMember.body.memberShare, true, '默认应当是「成员也能分享」');
+    assert.equal(asMember.body.invites.length, 1, '默认成员看得到可用的邀请码');
+
+    // 模拟这个开关上线之前建的群：字段根本不存在
+    const f = path.join(dataDir, 'groups', `${s.code}.json`);
+    const g = JSON.parse(fs.readFileSync(f, 'utf8'));
+    assert.equal('memberShare' in g, false, '新群默认不写这个字段，靠读的时候补默认值');
+    const after = await s.detail(s.mate.body.token);
+    assert.equal(after.body.memberShare, true, '缺字段时必须仍是「能分享」，不能静默关掉');
+});
+
+test('成员分享：只有群主能改，非法值被挡，改群名不误伤', async () => {
+    const s = await shareScene('分享权限');
+
+    const byMember = await s.setShare(false, s.mate.body.token);
+    assert.equal(byMember.status, 403, '成员不能改群设置');
+    assert.equal((await s.detail(s.mate.body.token)).body.memberShare, true, '被拒之后字段不该变');
+
+    for (const bad of ['yes', 0, 1, null]) {
+        assert.equal((await s.setShare(bad)).status, 400,
+            `memberShare=${JSON.stringify(bad)} 不是布尔值，应当被拒`);
+    }
+
+    // 只改群名的请求不该顺手把这个开关重置
+    assert.equal((await s.setShare(false)).status, 200);
+    await api(`/api/groups/${s.code}/settings`, {
+        method: 'PUT', token: s.owner.body.token, body: { name: '换了个名字' }
+    });
+    assert.equal((await s.detail(s.owner.body.token)).body.memberShare, false, '只传 name 不该动这个开关');
+});
+
+test('成员分享：关掉后成员一枚码都拿不到，群主照旧；已发出的链接不受影响', async () => {
+    const s = await shareScene('关闭分享');
+    // 关掉之前先发一枚，代表「已经发出去、正在别人手里」的链接
+    const inv = (await api(`/api/groups/${s.code}/invites`, {
+        method: 'POST', token: s.owner.body.token, body: { ttl: 'never' }
+    })).body.invite;
+
+    assert.equal((await s.setShare(false)).status, 200);
+
+    const asOwner = await s.detail(s.owner.body.token);
+    const asMember = await s.detail(s.mate.body.token);
+    assert.equal(asMember.body.memberShare, false, '成员要能知道「关着」这件事');
+    assert.deepEqual(asMember.body.invites, [], '成员一枚邀请码都不该拿到（服务端就不下发）');
+    assert.equal(asOwner.body.invites.length, 1, '群主的列表照旧');
+    assert.ok(asOwner.body.ownerCode, '群主的永久码照旧');
+
+    // 关开关 ≠ 让已发出去的链接失效。这是设计里明确要的：管的是「谁能发」，不是「哪条有效」
+    const late = await api('/api/register', {
+        method: 'POST', body: { nickname: '关掉之后来的', password: 'password1' }
+    });
+    assert.equal((await api(`/api/groups/${inv.code}/join`, {
+        method: 'POST', token: late.body.token
+    })).status, 200, '已经发出去的链接不该被这个开关顺手废掉');
+
+    // 首页那张卡片也要知道（否则它会继续把群码印给成员）
+    const mine = await api('/api/me/groups', { token: s.mate.body.token });
+    const item = mine.body.groups.find((x) => x.code === s.code);
+    assert.equal(item.memberShare, false, '群列表里要带上这个标志');
+    assert.equal(item.code, s.code, 'code 还得留着：成员要靠它打开这个群');
+
+    // 再打开就恢复
+    assert.equal((await s.setShare(true)).status, 200);
+    const back = await s.detail(s.mate.body.token);
+    assert.equal(back.body.memberShare, true);
+    assert.equal(back.body.invites.length, 1, '重新打开后成员又能看到码');
+});
+
 test('IP 限流：拿脚本刷加入接口会被挡住', async () => {
     // 单独起一个服务并把阈值调小（默认值宽得多，正常人碰不到）
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-rate-'));

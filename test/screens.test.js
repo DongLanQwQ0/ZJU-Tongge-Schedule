@@ -1310,6 +1310,95 @@ test('页脚版本号：服务端给什么就显示什么（连登录页都看�
     assert.match(el.textContent, new RegExp('^v' + pkg.version.replace(/\./g, '\\.')));
 });
 
+// ---------------------------------------------------------------- 成员分享开关
+
+test('成员分享开关：关掉后成员侧看不到码，首页那张卡片也不印', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '分享开关群' } });
+    const code = g.body.code;
+    await raw(`/api/groups/${code}/join`, { method: 'POST', token: mate.token, body: {} });
+    // 群主发一枚邀请码：成员侧那张卡片得先有东西可展示，
+    // 才有「关掉之后变成什么」可言（成员看不到码时卡片本来就是空的）
+    await raw(`/api/groups/${code}/invites`, { method: 'POST', token: owner.token, body: { ttl: 'never' } });
+
+    // 默认（开关没动过）：成员在首页和群组页都看得到码 —— 这是上线前的行为，不该改
+    const a1 = await started(base, { token: mate.token });
+    assert.match(a1.all('#home-groups .item')[0].textContent, new RegExp(code), '默认成员看得到邀请码');
+    a1.click(a1.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a1.el('#invite-share-box').hidden, false, '默认展示的是码那一块');
+    assert.equal(a1.el('#invite-closed').hidden, true);
+    assert.equal(a1.el('#btn-copy-code').disabled, false, '默认分享按钮可用');
+
+    // 群主关掉
+    assert.equal((await raw(`/api/groups/${code}/settings`, {
+        method: 'PUT', token: owner.token, body: { memberShare: false }
+    })).status, 200);
+
+    // 成员：群组页的邀请卡换成说明，而不是一个「——」加一张空二维码
+    const a2 = await started(base, { token: mate.token });
+    a2.click(a2.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a2.el('#invite-share-box').hidden, true, '成员不该再看到码 / 二维码 / 按钮');
+    assert.equal(a2.el('#invite-closed').hidden, false, '要换成那条说明');
+    assert.match(a2.el('#invite-closed').textContent, /群主/, '说明里要讲清楚该找谁');
+    assert.equal(a2.el('#btn-copy-code').disabled, true, '按钮即使露出来也点不出一个能用的链接');
+
+    // 首页那张卡片：不再印码，但**还得能点进去**
+    const card = a2.all('#home-groups .item')[0];
+    assert.equal(card.textContent.includes(code), false, '首页不能一边说只有群主能分享、一边把码印出来');
+    assert.match(card.textContent, /2 人/, '人数照旧显示');
+    assert.equal(card.getAttribute('data-code'), code, 'data-code 必须留着，否则首页点不开群了');
+
+    // 群主自己完全不受影响
+    const a3 = await started(base, { token: owner.token });
+    a3.click(a3.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a3.el('#invite-share-box').hidden, false, '群主照旧看得到自己的码');
+    assert.match(a3.all('#home-groups .item')[0].textContent, new RegExp(code), '群主首页照旧印码');
+});
+
+test('成员分享开关：群主点一下就能切，两侧立刻跟着变', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '开关即时群' } });
+    const code = g.body.code;
+    await raw(`/api/groups/${code}/join`, { method: 'POST', token: mate.token, body: {} });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+
+    const shareBtn = (v) => a.all('#share-mode button').find((b) => b.getAttribute('data-share') === v);
+    assert.ok(shareBtn('all') && shareBtn('owner'), '设置卡片里要有这个开关');
+    assert.equal(shareBtn('all')._classes.has('on'), true, '默认「成员也能分享」是亮的');
+
+    a.click(shareBtn('owner'));
+    await tick(300);
+    assert.equal(shareBtn('owner')._classes.has('on'), true, '切过去之后要标出来');
+    assert.equal(shareBtn('all')._classes.has('on'), false);
+    assert.equal((await raw(`/api/groups/${code}`, { token: owner.token })).body.memberShare, false,
+        '服务端真的关掉了');
+
+    // 成员那边重新进来就是关闭态
+    const b = await started(base, { token: mate.token });
+    assert.equal(b.all('#home-groups .item')[0].textContent.includes(code), false, '成员首页也不印码了');
+    b.click(b.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(b.el('#invite-closed').hidden, false);
+
+    // 再打开：成员又看得到码
+    await raw(`/api/groups/${code}/settings`, {
+        method: 'PUT', token: owner.token, body: { memberShare: true }
+    });
+    const c = await started(base, { token: mate.token });
+    c.click(c.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(c.el('#invite-closed').hidden, true, '打开之后说明该收起');
+    assert.equal(c.el('#invite-share-box').hidden, false, '码那一块回来');
+});
+
 // ---------------------------------------------------------------- 管理页筛选
 
 const COURSE2 = {

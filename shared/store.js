@@ -1178,7 +1178,14 @@ function createStore(dataDir, options) {
      * 默认值 == 这个功能上线之前的行为，升级不会改变已有群组的现状。
      */
     function groupSettings(g) {
-        return { joinMode: g.joinMode === 'approval' ? 'approval' : 'open' };
+        return {
+            joinMode: g.joinMode === 'approval' ? 'approval' : 'open',
+            // 这个字段是后加的，老群文件里没有它。默认 true 就是它上线之前的行为：
+            // 成员本来就能看到并转发邀请码，升级不该让已有群悄悄变样。
+            // 用 !== false 而不是 === true：万一哪个值被写坏，退回「照旧允许」，
+            // 而不是把一群人的分享能力静默关掉
+            memberShare: g.memberShare !== false
+        };
     }
 
     /**
@@ -1342,7 +1349,7 @@ function createStore(dataDir, options) {
         });
     }
 
-    /** 群主改群组设置（名称、入群方式） */
+    /** 群主改群组设置（名称、入群方式、成员能否分享） */
     async function updateGroupSettings(code, ownerId, patch) {
         const c = validateCode(code);
         const next = {};
@@ -1351,6 +1358,12 @@ function createStore(dataDir, options) {
                 throw fail(400, '入群方式只能是 open 或 approval');
             }
             next.joinMode = patch.joinMode;
+        }
+        if (patch && patch.memberShare !== undefined) {
+            if (typeof patch.memberShare !== 'boolean') {
+                throw fail(400, '成员分享只能是开或关');
+            }
+            next.memberShare = patch.memberShare;
         }
         if (patch && patch.name !== undefined) {
             // 空名字会被 sanitizeGroupName 兜成「我的组团」，这里挑明更好
@@ -1559,11 +1572,15 @@ function createStore(dataDir, options) {
             createdAt: g.createdAt,
             joinMode: settings.joinMode,
             isCreator: g.creatorId === viewerId,
+            // 成员能不能拿到邀请码，由群主的开关说了算。关掉时**服务端就不下发** ——
+            // 只在界面上藏起来的话，成员照样能从接口响应里把码读出来，这开关就是个摆设。
+            // 这个标志本身对所有人可见：成员得知道「我这里为什么没有码」。
+            memberShare: settings.memberShare,
             // 成员也能看到**还能用**的邀请码：这样谁都能帮群里拉人。
             // 但作废/过期的那堆只给群主看 —— 那是管理痕迹，不是分享材料。
             invites: (g.creatorId === viewerId
                 ? invites.slice()
-                : invites.filter((i) => inviteActive(i, at)))
+                : (settings.memberShare ? invites.filter((i) => inviteActive(i, at)) : []))
                 .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
                 .map((i) => publicInvite(i, at)),
             // 群主自己的永久码，不当作邀请票，但界面要能显示出来
@@ -1599,6 +1616,8 @@ function createStore(dataDir, options) {
                 name: g.name,
                 memberCount: g.members.length,
                 isCreator: g.creatorId === userId,
+                // 成员分享被关掉时，首页那张卡片也不该印邀请码（见成员分享开关的设计）
+                memberShare: groupSettings(g).memberShare,
                 pending: isPending,
                 updatedAt: g.updatedAt
             });
