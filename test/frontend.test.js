@@ -105,9 +105,11 @@ test('api.js 里每个方法都请求了一个真实存在的路由', () => {
     // api.js 里请求的字面量路径。拼接出来的（'api/groups/' + code + ...）
     // 只取静态前缀，用前缀去配路由 —— 够抓「路由改名了但前端没跟」这类错。
     // 前端写的是相对路径（子路径部署要用），这里统一补前导斜杠再和绝对路由对照。
+    // query 不算路径的一部分：服务端是按 pathname 匹配路由的（server.js 里
+    // new URL(req.url).pathname），带着 ?days= 去比对只会假红。
     const paths = [...new Set(
         [...api.matchAll(/request\(\s*'(\/?api\/[^']*)'/g)]
-            .map((x) => (x[1].startsWith('/') ? x[1] : '/' + x[1]))
+            .map((x) => (x[1].startsWith('/') ? x[1] : '/' + x[1]).split('?')[0])
     )];
     assert.ok(paths.length > 8, '应能抓到一批 api 路径');
 

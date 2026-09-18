@@ -14,6 +14,7 @@ const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
 const auth = require('./auth.js');
+const { createStatsStore } = require('./stats-store.js');
 
 const SESSION_TTL = 90 * 86400000;      // 会话 90 天
 const GROUP_TTL = 180 * 86400000;       // 群组 180 天不活动即清理
@@ -228,6 +229,21 @@ function createStore(dataDir, options) {
     async function readJson(file, fallback) {
         return decodeFor(file, await readRaw(file, fallback));
     }
+
+    /**
+     * 活跃度桶（谁在哪天来过、来了几次、做了哪些关键动作）。
+     *
+     * 口径在 `shared/stats.js`（纯函数，前后端共用一份），落盘规则在
+     * `shared/stats-store.js`；这里只把它接上**同一套 IO**：原子写 + 进程内锁 + 同一个时钟。
+     *
+     * 用 `writeJsonAtomic` 而不是 `writeCritical`：桶不值得留 `.bak`（丢一天最多丢一天的统计），
+     * 而 `writeCritical` 每写一次就复制一份 .bak，90 天下来会攒一堆没人用的副本。
+     * 桶文件**不加密**，理由写在设计文档 §4.3：里面只有账号 ID 和计数，
+     * 没有任何姓名/课表/备注，而 ID 关联在 sessions.json 里本来就是明文。
+     */
+    const stats = createStatsStore({
+        dir: dataDir, readJson, writeJsonAtomic, withLock, now
+    });
 
     /**
      * readJson + 损坏时先尝试从 .bak 恢复。
@@ -1686,9 +1702,9 @@ function createStore(dataDir, options) {
 
     // -------------------------------------------------- 清理
 
-    /** 过期会话与长期不活动的群组 */
+    /** 过期会话、长期不活动的群组，以及过老的活跃度桶 */
     async function cleanup() {
-        const removed = { sessions: 0, groups: 0 };
+        const removed = { sessions: 0, groups: 0, statDays: 0 };
         const db = await readCachedSessions();
         Object.keys(db.sessions).forEach((t) => {
             if (now() - db.sessions[t].lastSeen > SESSION_TTL) {
@@ -1712,6 +1728,9 @@ function createStore(dataDir, options) {
                 removed.groups++;
             }
         }
+        // 活跃度桶也在这里修剪：清理是「启动一次 + 每天一次」，正好是桶要的节奏，
+        // 不必为它单开一个定时器。修剪失败只记日志，不影响前两项
+        removed.statDays = await stats.prune();
         return removed;
     }
 
@@ -1950,7 +1969,9 @@ function createStore(dataDir, options) {
         deleteGroup,
         transferOwnership,
         groupDetail,
-        listGroupsForUser
+        listGroupsForUser,
+        // 活跃度：记账（同步、只在内存里）/ 落盘 / 读窗口。口径见 shared/stats.js
+        stats
     };
 }
 

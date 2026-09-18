@@ -138,6 +138,8 @@
 
         // 管理页（服务端还会再查一次管理员身份，前端藏入口只是不碍眼）
         adminOverview: function () { return request('api/admin/overview'); },
+        // days 只认 7 / 30 / 90（服务端白名单），传别的会 400 —— 那是故意的，别在这儿兜底
+        adminStats: function (days) { return request('api/admin/stats?days=' + (days || 30)); },
         adminSetAdmin: function (userId, admin) {
             return request('api/admin/users/' + encodeURIComponent(userId) + '/admin', 'PUT', { admin: !!admin });
         },

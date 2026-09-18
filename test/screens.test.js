@@ -361,7 +361,9 @@ function bootApp(baseUrl, opts = {}) {
             periods: require('../shared/periods.js'),
             ics: require('../shared/ics.js'),
             weeks: require('../shared/weeks.js'),
-            compare: require('../shared/compare.js')
+            compare: require('../shared/compare.js'),
+            // 统计页画折线用的是它（index.html 里也是同一个文件，见 server.js 的 SHARED_PUBLIC）
+            stats: require('../shared/stats.js')
         },
         _l: Object.create(null),
         matchMedia: () => ({ matches: false, addEventListener() {}, addListener() {} }),
@@ -2104,3 +2106,148 @@ test('管理页筛选：清空筛选恢复全量，且列表委托始终只有�
     } finally { await t.close(); }
 });
 
+
+// ---------------------------------------------------------------- 统计页
+
+/**
+ * 一个管理员 + 一点真实活动（都真走接口）。
+ *
+ * 活跃度只认真实请求，所以这些活动不能像筛选那批用例那样改盘上的 users.json ——
+ * 伪造出来的「注册时间」骗不了统计，得真的注册、真的登录、真的传课表。
+ */
+async function statsScene(t) {
+    const boss = await t.mkUser(false);
+    await t.s.store.setUserAdmin(boss.id, true);
+    const mate = await t.mkUser(true);                       // 传过课表
+    const g = await t.call('/api/groups', {
+        method: 'POST', token: mate.token, body: { name: '统计群' }
+    });
+    const detail = await t.call(`/api/groups/${g.body.code}`, { token: mate.token });
+    const guest = await t.mkUser(false);
+    await t.call(`/api/groups/${detail.body.invites[0].code}/join`, {
+        method: 'POST', token: guest.token, body: {}
+    });
+    await t.call('/api/login', { method: 'POST', body: { nickname: mate.nickname, password: 'pw123456' } });
+    return { boss, mate, guest, code: g.body.code };
+}
+
+/** 起一份 app 并从管理页点进统计页，等到数字画出来 */
+async function openStatsAt(url, token) {
+    const a = await started(url, { token });
+    a.click('#btn-admin');
+    const inAdmin = await until(() => a.activeScreen() === 'admin' && a.all('#admin-users .item').length > 0);
+    assert.ok(inAdmin, '管理页应当先把账号列表画出来');
+    a.click('#btn-admin-stats');
+    const onStats = await until(() => a.activeScreen() === 'stats' && a.all('#stats-today .stat').length > 0);
+    assert.ok(onStats, '统计页应当把数字画出来');
+    return a;
+}
+
+test('统计入口：只挂在管理页里，首页上没有', async () => {
+    const t = await filterSetup();
+    try {
+        const { boss } = await statsScene(t);
+        const a = await started(t.url, { token: boss.token });
+        await tick(250);
+        assert.equal(a.activeScreen(), 'home');
+        // 首页是所有人共用的那一屏，统计只给管理员 —— 入口不能出现在那儿
+        assert.ok(a.el('#screen-admin #btn-admin-stats'), '统计入口应当在管理页里');
+        assert.equal(a.el('#screen-home #btn-admin-stats'), null, '首页里不该有统计入口');
+    } finally { await t.close(); }
+});
+
+test('统计页：数字、折线、动作、活跃榜都画出来', async () => {
+    const t = await filterSetup();
+    try {
+        const { boss, mate, guest } = await statsScene(t);
+        const a = await openStatsAt(t.url, boss.token);
+
+        assert.equal(a.title(), '统计');
+        assert.match(a.el('#stats-window').textContent, /^\d{4}-\d{2}-\d{2} ~ \d{4}-\d{2}-\d{2}$/);
+
+        // 六个数字，标签要带上窗口（否则「活跃」到底指几天全靠猜）
+        const tiles = a.all('#stats-today .stat').map((x) => x.textContent);
+        assert.equal(tiles.length, 6);
+        assert.ok(tiles.some((x) => /今日活跃/.test(x)), '要有今日活跃');
+        assert.ok(tiles.some((x) => /30 天活跃/.test(x)), '默认窗口是 30 天');
+        assert.ok(tiles.some((x) => /30 天请求/.test(x)));
+
+        // 折线：真的是一条 path，坐标是数字、不是 NaN
+        const spark = a.el('#stats-active-spark').innerHTML;
+        assert.match(spark, /<svg/);
+        assert.match(spark, /<path d="M[\d.]+ [\d.]+/);
+        assert.equal(/NaN/.test(spark), false, '折线里不能出现 NaN');
+        assert.equal(/NaN/.test(a.el('#stats-new-spark').innerHTML), false);
+
+        // 动作：白名单九项全列出来（0 也列 —— 「没人做」和「没统计」要分得清）
+        const acts = a.all('#stats-actions .item').map((x) => x.querySelector('.title').textContent);
+        assert.equal(acts.length, 9);
+        assert.ok(acts.includes('传课表') && acts.includes('建群') && acts.includes('入群'));
+
+        // 用户计量：昵称由服务端补上（桶里只有 id）
+        const top = a.el('#stats-top').textContent;
+        assert.match(top, new RegExp(boss.nickname), '活跃榜里要有真的来过的人');
+        assert.match(top, new RegExp(mate.nickname));
+        assert.match(top, new RegExp(guest.nickname));
+        assert.match(top, /活跃 \d+ 天/);
+        assert.match(a.el('#stats-courses').textContent, /人均 .* 个课时段/);
+        assert.match(a.el('#stats-courses').textContent, /人传过课表/);
+        assert.match(a.el('#stats-retention').textContent, /7 日留存/);
+    } finally { await t.close(); }
+});
+
+test('统计页：切 7 / 90 天会重新拉，标签跟着窗口变', async () => {
+    const t = await filterSetup();
+    try {
+        const { boss } = await statsScene(t);
+        const a = await openStatsAt(t.url, boss.token);
+        assert.match(a.el('#stats-today').textContent, /30 天活跃/);
+
+        a.click(a.el('#stats-range button[data-days="7"]'));
+        const ok7 = await until(() => /7 天活跃/.test(a.el('#stats-today').textContent));
+        assert.ok(ok7, '切到 7 天之后数字标签要跟着变');
+        assert.equal(a.all('#stats-range button.on').length, 1, '选中的胶囊只能有一个');
+
+        a.click(a.el('#stats-range button[data-days="90"]'));
+        const ok90 = await until(() => /90 天活跃/.test(a.el('#stats-today').textContent));
+        assert.ok(ok90, '切到 90 天同理');
+        assert.equal(a.el('#stats-actions-sub').textContent, '90 天合计');
+    } finally { await t.close(); }
+});
+
+test('统计页：一份数据都没有时不画线，也不出现 NaN', async () => {
+    const t = await filterSetup();
+    try {
+        const boss = await t.mkUser(false);
+        await t.s.store.setUserAdmin(boss.id, true);
+
+        // 真实运行时「这次统计请求」本身就会产生活跃，所以空数据只能喂进来 ——
+        // 这条验的是前端的退化画法（别把「还没开始记」画成「真的没人来」）
+        const S = require('../shared/stats.js');
+        const empty = S.summarize([], { today: S.dayKey(), days: 30 });
+        empty.summary.avgCourses = 0;
+        empty.summary.courseUploaded = 0;
+
+        const real = globalThis.__realFetch;
+        globalThis.__realFetch = (url, init) => String(url).includes('/api/admin/stats')
+            ? Promise.resolve(new Response(JSON.stringify(empty), {
+                status: 200, headers: { 'Content-Type': 'application/json' }
+            }))
+            : real(url, init);
+        try {
+            const a = await started(t.url, { token: boss.token });
+            a.click('#btn-admin');
+            await until(() => a.activeScreen() === 'admin');
+            a.click('#btn-admin-stats');
+            const onStats = await until(() => a.activeScreen() === 'stats' && /还没有数据/.test(a.el('#stats-active-spark').innerHTML));
+            assert.ok(onStats, '没有数据时要说明白，而不是画一条贴底的线');
+
+            assert.equal(/<path/.test(a.el('#stats-active-spark').innerHTML), false);
+            assert.match(a.el('#stats-top').textContent, /还没有统计数据/);
+            assert.match(a.el('#stats-retention').textContent, /暂时算不出来/);
+            assert.equal(/NaN|undefined/.test(a.el('#stats-today').innerHTML), false);
+        } finally {
+            globalThis.__realFetch = real;
+        }
+    } finally { await t.close(); }
+});

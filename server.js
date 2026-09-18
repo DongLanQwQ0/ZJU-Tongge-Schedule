@@ -553,6 +553,10 @@ async function createServer(options = {}) {
         if (!m) throw fail(401, '请先登录');
         const user = await store.resolveSession(m[1].trim());
         if (!user) throw fail(401, '登录状态过期了，请重新登录');
+        // 活跃度的「请求级」口径就挂在这儿：requireAdmin / requireSuper 都建在这个函数上，
+        // 所以它是**所有带令牌请求的唯一必经之路** —— 一次请求只经过一次，不会漏也不会重复计。
+        // 记账是同步的、只改内存（见 store.stats），所以这里不引入任何 await
+        store.stats.touch(user.id);
         return { user, token: m[1].trim() };
     }
 
@@ -577,6 +581,21 @@ async function createServer(options = {}) {
         const ctx = await requireAdmin(req);
         if (!ctx.user.super) throw fail(403, '这事只有超级管理员能做');
         return ctx;
+    }
+
+    /**
+     * 统计页能选的窗口。**白名单**，和邀请有效期一个套路。
+     *
+     * 非法值直接 400，不静默回落到 30 天：口径猜错比报错更难查 ——
+     * 用户看到一张「30 天的图」，会以为那就是他要的 13 天。
+     */
+    const STATS_DAYS = [7, 30, 90];
+    function parseStatsDays(req) {
+        const raw = new URL(req.url, 'http://localhost').searchParams.get('days');
+        if (raw == null || raw === '') return 30;
+        const n = Number(raw);
+        if (!STATS_DAYS.includes(n)) throw fail(400, 'days 只能是 7 / 30 / 90');
+        return n;
     }
 
     const routes = [
@@ -625,6 +644,9 @@ async function createServer(options = {}) {
                 throw fail(400, '验证码不对，换一张再试');
             }
             const user = await store.createUser(body.nickname, body.password, { ip });
+            // 注册发生在「拿到令牌之前」，不经过 requireUser 那个挂点，所以要单独记一笔：
+            // 新账号当天就该算活跃（他确实来做了事），否则「当天新增的人全是 0 活跃」
+            store.stats.noteNewUser(user.id);
             store.appendAudit({
                 event: 'register',
                 nickname: user.nickname,
@@ -661,6 +683,7 @@ async function createServer(options = {}) {
             }
             clearFail(key);
             await store.noteLogin(user.id, ip);
+            store.stats.noteLogin(user.id);       // 登录级口径：和请求级分开计数
             const token = await store.createSession(user.id);
             return { userId: user.id, nickname: user.nickname, token };
         }],
@@ -682,6 +705,7 @@ async function createServer(options = {}) {
             const { user } = await requireUser(req);
             const body = await readBody(req, res);
             const updated = await store.setUserCourses(user.id, body.courses);
+            store.stats.bump(user.id, 'course_upload');
             return { ok: true, courseCount: (updated.courses || []).length };
         }],
 
@@ -707,6 +731,7 @@ async function createServer(options = {}) {
             }
             limiter.loginFail.reset(throttle);
             await store.setUserPassword(user.id, body.newPassword);
+            store.stats.bump(user.id, 'password_change');
             store.appendAudit({ event: 'password_change', nickname: user.nickname, ip });
             return { ok: true };
         }],
@@ -726,6 +751,8 @@ async function createServer(options = {}) {
             if (!(await store.verifyLogin(user.nickname, body.password))) {
                 throw fail(401, '密码不对，注销已取消');
             }
+            // 记在删号**之前**：账号一没，桶里那个 id 就再也没法跟人对上号了
+            store.stats.bump(user.id, 'account_delete');
             const r = await store.deleteUser(user.id);
             store.appendAudit({
                 event: 'delete_account',
@@ -750,6 +777,7 @@ async function createServer(options = {}) {
             const { user } = await requireUser(req);
             const body = await readBody(req, res);
             const g = await store.createGroup(user.id, body.name);
+            store.stats.bump(user.id, 'group_create');
             return { code: g.code, name: g.name };
         }],
 
@@ -760,6 +788,8 @@ async function createServer(options = {}) {
             // （群码不再是票，拿群码来一律 404 —— 见 2026-09-18-group-code-not-a-ticket-design.md）。
             // 直接用 joinGroup 的话，票码根本找不到对应的群文件。
             const r = await store.joinByInvite(validateCode(m[1]), user.id);
+            // 审批模式下这次只是「登记申请」，不算加入 —— 动作口径写的是「真的进了群」
+            if (!r.pending) store.stats.bump(user.id, 'group_join');
             return { ok: true, code: r.group.code, name: r.group.name, pending: r.pending };
         }],
 
@@ -803,6 +833,7 @@ async function createServer(options = {}) {
 
             const g = await store.transferOwnership(validateCode(m[1]), user.id, body.targetId);
             const heir = await store.getUser(String(body.targetId));
+            store.stats.bump(user.id, 'group_transfer');
             store.appendAudit({
                 event: 'group_transfer',
                 by: user.nickname,                    // 老群主
@@ -822,6 +853,7 @@ async function createServer(options = {}) {
             const { user } = await requireUser(req);
             const body = await readBody(req, res);
             const inv = await store.addInvite(validateCode(m[1]), user.id, body.ttl, body.label);
+            store.stats.bump(user.id, 'invite_create');
             store.appendAudit({
                 event: 'invite_create',
                 by: user.nickname,
@@ -905,6 +937,7 @@ async function createServer(options = {}) {
         ['DELETE', /^\/api\/groups\/(\d{6}|\d{8})\/me$/, async (req, res, m) => {
             const { user } = await requireUser(req);
             await store.leaveGroup(validateCode(m[1]), user.id);
+            store.stats.bump(user.id, 'group_leave');
             return { ok: true };
         }],
 
@@ -947,6 +980,29 @@ async function createServer(options = {}) {
             };
         }],
 
+        /**
+         * 活跃度统计（管理员专用）。
+         *
+         * 聚合**在服务端算好**：口径在 `shared/stats.js` 里只有一份，前端只负责画图和印数字 ——
+         * 两边各算一套的下场是「服务端说 12、前端画成 11」，那种错查起来很费劲。
+         *
+         * 桶里没有昵称（那是加密字段，只有服务端解得开），活跃榜要显示谁，
+         * 就在这儿把账号表读进来补上。人均课表数同理：它来自账号表，不属于桶。
+         */
+        ['GET', /^\/api\/admin\/stats$/, async (req) => {
+            await requireAdmin(req);
+            const days = parseStatsDays(req);
+            const users = await store.readUsers();
+            const nameOf = Object.create(null);
+            users.forEach((u) => { nameOf[u.id] = u.nickname; });
+
+            const out = await store.stats.readWindow(days, { nameOf: (id) => nameOf[id] || id });
+            const totalCourses = users.reduce((n, u) => n + (u.courses || []).length, 0);
+            out.summary.avgCourses = users.length ? Math.round((totalCourses / users.length) * 10) / 10 : 0;
+            out.summary.courseUploaded = users.filter((u) => (u.courses || []).length > 0).length;
+            return out;
+        }],
+
         // 授 / 撤管理员
         ['PUT', /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,40})\/admin$/, async (req, res, m) => {
             const { user } = await requireAdmin(req);
@@ -968,6 +1024,7 @@ async function createServer(options = {}) {
                 }
             }
             const u = await store.setUserAdmin(targetId, on);
+            store.stats.bump(user.id, 'admin_action');
             store.appendAudit({
                 event: on ? 'admin_grant' : 'admin_revoke',
                 by: user.nickname,
@@ -985,6 +1042,7 @@ async function createServer(options = {}) {
             const doomed = await store.getUser(m[1]);
             if (doomed && doomed.super) throw fail(403, '超级管理员不能被删除');
             const r = await store.deleteUser(m[1]);
+            store.stats.bump(user.id, 'admin_action');
             store.appendAudit({
                 event: 'admin_delete_user',
                 by: user.nickname,
@@ -1007,6 +1065,7 @@ async function createServer(options = {}) {
                 throw fail(403, '不能重置超级管理员的密码；让他自己走「改密码」');
             }
             const r = await store.resetUserPassword(m[1]);
+            store.stats.bump(admin.id, 'admin_action');
             store.appendAudit({
                 event: 'admin_reset_password',
                 by: admin.nickname,
@@ -1043,6 +1102,7 @@ async function createServer(options = {}) {
         ['DELETE', /^\/api\/admin\/groups\/(\d{6}|\d{8})$/, async (req, res, m) => {
             const { user } = await requireAdmin(req);
             const g = await store.deleteGroupAsAdmin(validateCode(m[1]));
+            store.stats.bump(user.id, 'admin_action');
             store.appendAudit({
                 event: 'admin_delete_group',
                 by: user.nickname,
@@ -1095,7 +1155,7 @@ async function createServer(options = {}) {
      * 更要紧的是：哪天有人往 shared/ 里放一个密钥常量，敞开就等于当场泄漏。
      * 白名单让那句声明变成代码事实。
      */
-    const SHARED_PUBLIC = new Set(['config.js', 'periods.js', 'ics.js', 'weeks.js', 'compare.js']);
+    const SHARED_PUBLIC = new Set(['config.js', 'periods.js', 'ics.js', 'weeks.js', 'compare.js', 'stats.js']);
 
     async function serveStatic(req, res, pathname) {
         // /shared/* 直接映射到仓库里的 shared/，避免把共享模块复制一份到 public/
@@ -1213,16 +1273,19 @@ async function createServer(options = {}) {
     }, 24 * 3600 * 1000);
     timer.unref();
 
-    // 会话表攒下的 lastSeen 定期落盘（10 秒一次，脏了才写）
+    // 活跃度的「攒下的桶」定期落盘（10 秒一次，脏了才写）。
+    // 和会话的 lastSeen 同一个节奏、同一个理由：请求路径上一个字节都不写
     const flushTimer = setInterval(() => {
         store.flushSessions('定时').catch(() => {});
+        store.stats.flush('定时').catch(() => {});
     }, 10 * 1000);
     flushTimer.unref();
 
-    // 关服前把还没落盘的会话写下去，免得下次启动读到偏旧的 lastSeen
+    // 关服前把还没落盘的写下去，免得下次启动读到偏旧的计数
     server.on('close', () => {
         clearInterval(flushTimer);
         store.flushSessions('关服').catch(() => {});
+        store.stats.flush('关服').catch(() => {});
     });
 
     server.store = store;

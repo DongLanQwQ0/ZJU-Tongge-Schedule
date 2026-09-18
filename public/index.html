@@ -170,6 +170,9 @@
     <div class="card">
         <h2>概览 <span class="sub" id="admin-me"></span></h2>
         <div class="stats" id="admin-stats"></div>
+        <!-- 统计是「观察」，管理页是「操作台」（筛账号、删号、解散群）—— 使用节奏不一样，
+             所以单开一屏。入口放这儿：反正只有管理员进得来 -->
+        <button class="btn ghost small" id="btn-admin-stats" style="margin-top:12px">看活跃度统计 ›</button>
     </div>
 
     <div class="card">
@@ -251,6 +254,44 @@
     <div class="card">
         <h2>审计日志 <span class="sub">最近 200 条，新的在上</span></h2>
         <div class="list" id="admin-audit"></div>
+    </div>
+</section>
+
+<!-- ==================================================== 统计 -->
+<section class="screen" id="screen-stats">
+    <div class="card">
+        <h2>活跃度 <span class="sub" id="stats-window"></span></h2>
+        <!-- 7 / 30 / 90 是服务端的白名单，别在这儿加别的档位 -->
+        <div class="segmented" id="stats-range">
+            <button data-days="7">7 天</button>
+            <button data-days="30" class="on">30 天</button>
+            <button data-days="90">90 天</button>
+        </div>
+        <div class="stats" id="stats-today" style="margin-top:12px"></div>
+        <p class="stat-note tiny" id="stats-retention"></p>
+    </div>
+
+    <div class="card">
+        <h2>曲线 <span class="sub">按天，画的是形状不是绝对值</span></h2>
+        <div class="spark-wrap">
+            <div class="spark" id="stats-active-spark"></div>
+            <div class="tiny">每天活跃人数（窗口内最高的一天顶到上沿）</div>
+        </div>
+        <div class="spark-wrap" style="margin-top:16px">
+            <div class="spark new" id="stats-new-spark"></div>
+            <div class="tiny">每天新增账号</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>动作 <span class="sub" id="stats-actions-sub"></span></h2>
+        <div class="list" id="stats-actions"></div>
+    </div>
+
+    <div class="card">
+        <h2>用户计量 <span class="sub" id="stats-top-sub"></span></h2>
+        <p class="stat-note tiny" id="stats-courses"></p>
+        <div class="list" id="stats-top"></div>
     </div>
 </section>
 
@@ -583,6 +624,7 @@
 <script src="shared/ics.js?v=2"></script>
 <script src="shared/weeks.js?v=2"></script>
 <script src="shared/compare.js?v=2"></script>
+<script src="shared/stats.js?v=2"></script>
 <!-- 本地内置，不依赖 CDN -->
 <script src="lib/qrcode.js"></script>
 <script src="lib/html2canvas.min.js"></script>

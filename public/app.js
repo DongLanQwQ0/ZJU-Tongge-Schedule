@@ -1,7 +1,7 @@
 /**
  * 同格 —— 找个课搭子一起上课。前端主逻辑。
  *
- * 依赖：共享纯函数（DSH.periods / DSH.ics / DSH.weeks / DSH.compare）、API、qrcode、html2canvas。
+ * 依赖：共享纯函数（DSH.periods / DSH.ics / DSH.weeks / DSH.compare / DSH.stats）、API、qrcode、html2canvas。
  */
 (function () {
     'use strict';
@@ -10,6 +10,7 @@
     var ics = window.DSH.ics;
     var weeks = window.DSH.weeks;
     var cmp = window.DSH.compare;
+    var stats = window.DSH.stats;
     var config = window.DSH.config || {};
 
     var $ = function (sel, root) { return (root || document).querySelector(sel); };
@@ -201,6 +202,7 @@
         local: { a: [], b: [], nameA: '', nameB: '', weekIndex: null },
         currentWindow: null,
         admin: null,
+        stats: null,
         screen: null,
         // 当前邀请卡片里展示的是哪一枚票。null = 按「最新一枚还能用的」自动挑
         activeInvite: null,
@@ -335,6 +337,11 @@
         if (id === 'account') {
             // 返回手势落到账号屏：登录状态还在就能还原，否则回首页
             if (state.me) return openAccount();
+            return fallbackHome();
+        }
+        if (id === 'stats') {
+            // 统计是管理员专属：权限中途没了（被撤管 / 会话过期）就回首页
+            if (state.me && state.me.admin) return openStats();
             return fallbackHome();
         }
         if (id === 'auth') return show('auth', { title: '同格' });
@@ -1424,8 +1431,134 @@
         $('#btn-local').addEventListener('click', function () { show('local', { title: '本地快速比对', back: goHome }); initLocalOnce(); });
         $('#btn-open-admin').addEventListener('click', function () { openAdmin(); });
         $('#btn-admin').addEventListener('click', function () { openAdmin(); });
+        $('#btn-admin-stats').addEventListener('click', function () { openStats(); });
         initAdminDelegates();
         initAdminFilter();
+        initStats();
+    }
+
+    // ------------------------------------------------------------ 统计页
+
+    /** 动作 key -> 中文。列表顺序＝这个对象的键顺序：先「产出」，后管理动作 */
+    var STATS_ACTION_LABEL = {
+        course_upload: '传课表',
+        group_create: '建群',
+        group_join: '入群',
+        group_leave: '退群',
+        invite_create: '生成邀请链接',
+        group_transfer: '转让群主',
+        password_change: '改密码',
+        account_delete: '注销账号',
+        admin_action: '管理动作'
+    };
+
+    /** 当前看的窗口。7 / 30 / 90 是服务端的白名单，前端只在这三档里切 */
+    var statsDays = 30;
+
+    async function openStats() {
+        if (!state.me || !state.me.admin) return fallbackHome();
+        // 返回键回管理页：统计是从那儿进来的，回首页会让人以为自己退了两层
+        show('stats', { title: '统计', back: openAdmin });
+        $('#stats-today').innerHTML = '<div class="spinner">统计中…</div>';
+        await loadStats();
+    }
+
+    async function loadStats() {
+        try {
+            state.stats = await API.adminStats(statsDays);
+        } catch (e) {
+            // 401 由 onUnauthorized 统一处理（跳登录页），这里再 fallback 会把人拽回「已登出」的首页
+            if (e.status === 401) return;
+            toast(e.message, true);
+            $('#stats-today').innerHTML = '<div class="empty">拉不到统计数据</div>';
+            return;
+        }
+        renderStats();
+    }
+
+    function statTile(n, label) {
+        return '<div class="stat"><b>' + (n == null ? 0 : n) + '</b><span>' + label + '</span></div>';
+    }
+
+    /**
+     * 迷你折线。用 innerHTML 拼 `<svg>`，而不是 createElementNS：
+     * 这样测试里的 DOM 垫片也能断言（垫片没有 SVG 那套 DOM API），
+     * 而浏览器解析 HTML 里的 `<svg>` 本来就是支持的。
+     *
+     * 没有数据（或整段全是 0）时**不画线**，给一句说明 —— 一条贴着底边的线
+     * 会被读成「真的没人来过」，而实际情况往往是「还没开始记」。
+     */
+    function drawSpark(sel, values) {
+        var box = $(sel);
+        if (!box) return;
+        var vals = values || [];
+        if (!vals.length || stats.seriesMax(vals) === 0) {
+            box.innerHTML = '<div class="spark-empty tiny">还没有数据</div>';
+            return;
+        }
+        box.innerHTML = '<svg viewBox="0 0 300 60" preserveAspectRatio="none" aria-hidden="true">' +
+            '<path d="' + stats.sparkPath(vals, 300, 60) + '"></path></svg>';
+    }
+
+    function renderStats() {
+        var s = state.stats;
+        if (!s) return;
+        var sum = s.summary || {};
+        var range = sum.range || {};
+        var today = sum.today || {};
+        var days = s.days || statsDays;
+
+        $('#stats-window').textContent = s.from + ' ~ ' + s.to;
+        $('#stats-today').innerHTML = [
+            statTile(today.active, '今日活跃'),
+            statTile(today.newUsers, '今日新增'),
+            statTile(range.activeUnique, days + ' 天活跃'),
+            statTile(range.newUsers, days + ' 天新增'),
+            statTile(range.requests, days + ' 天请求'),
+            statTile(range.avgRequestsPerActive, '人均请求')
+        ].join('');
+
+        // 口径写在界面上：不写清楚「留存」这两个字，谁都能读出自己的意思
+        var ret = sum.retention7 || { cohort: 0, returned: 0, rate: 0 };
+        $('#stats-retention').textContent = ret.cohort
+            ? '7 日留存：7 天前新增的 ' + ret.cohort + ' 个账号里，今天还有 ' + ret.returned +
+              ' 个在活跃（' + Math.round(ret.rate * 100) + '%）。'
+            : '7 日留存：7 天前还没有新增记录，暂时算不出来。';
+
+        drawSpark('#stats-active-spark', s.series.map(function (r) { return r.active; }));
+        drawSpark('#stats-new-spark', s.series.map(function (r) { return r.newUsers; }));
+
+        // 白名单里的每一项都列出来（0 也显示）：「这个动作没人做」和「这个动作没统计」
+        // 是两件不同的事，列表里缺一行会让人以为是后者
+        var acts = sum.actions || {};
+        $('#stats-actions-sub').textContent = days + ' 天合计';
+        $('#stats-actions').innerHTML = Object.keys(STATS_ACTION_LABEL).map(function (k) {
+            return '<div class="item"><div class="grow"><div class="title">' + STATS_ACTION_LABEL[k] +
+                '</div></div><b class="num">' + (acts[k] || 0) + '</b></div>';
+        }).join('');
+
+        $('#stats-top-sub').textContent = '按活跃天数排的前 10';
+        $('#stats-courses').textContent = '人均 ' + (sum.avgCourses == null ? 0 : sum.avgCourses) +
+            ' 个课时段 · ' + (sum.courseUploaded || 0) + ' 人传过课表';
+        $('#stats-top').innerHTML = (s.top && s.top.length)
+            ? s.top.map(function (t) {
+                return '<div class="item"><div class="grow"><div class="title">' + esc(t.nickname) +
+                    '</div><div class="sub">活跃 ' + t.activeDays + ' 天 · 请求 ' + t.requests +
+                    (t.lastAt ? ' · 最后 ' + fmtTime(t.lastAt) : '') + '</div></div></div>';
+            }).join('')
+            : '<div class="empty">还没有统计数据 —— 从这一版上线那天开始记</div>';
+    }
+
+    function initStats() {
+        $('#stats-range').addEventListener('click', function (e) {
+            var btn = e.target.closest && e.target.closest('button[data-days]');
+            if (!btn) return;
+            var d = Number(btn.getAttribute('data-days'));
+            if (!d || d === statsDays) return;
+            statsDays = d;
+            $$('#stats-range button').forEach(function (b) { b.classList.toggle('on', b === btn); });
+            loadStats();
+        });
     }
 
     async function joinByCode(code) {

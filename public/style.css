@@ -585,6 +585,23 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .admin-row { padding: 10px 12px; gap: 8px; }
 .admin-row .title { font-size: 14px; }
 .admin-row .sub { font-size: 11px; }
+
+/* ------------------------------------------------------------ 统计页 */
+
+/* 迷你折线：手画的 SVG path（shared/stats.js 算 d），零依赖 ——
+   为一张 90 个点的图引一个图表库不划算。
+   preserveAspectRatio="none" + vector-effect：横着拉满容器，线宽不被拉伸 */
+.spark-wrap { margin: 2px 0 0; }
+.spark svg { display: block; width: 100%; height: 56px; }
+.spark path {
+    fill: none; stroke: var(--c-area); stroke-width: 2;
+    stroke-linejoin: round; stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+}
+.spark.new path { stroke: var(--c-same); }
+.spark .spark-empty { height: 56px; display: grid; place-items: center; }
+.stat-note { margin-top: 10px; line-height: 1.7; }
+.item .num { font-weight: 700; font-variant-numeric: tabular-nums; }
 .admin-row .overlap { margin-top: 5px; }
 .admin-row .row-note, .admin-row .row-remove { padding: 5px 8px; }
 .admin-row .adt { font-weight: 600; }
