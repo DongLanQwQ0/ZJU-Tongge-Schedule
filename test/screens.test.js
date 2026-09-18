@@ -504,6 +504,22 @@ function bootApp(baseUrl, opts = {}) {
 
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 轮询到条件成立为止。
+ *
+ * 固定 sleep 在 CPU 重的路径上会偶发不够 —— 改密码那条路要跑三次 scrypt
+ * （验旧密码 / 算新哈希 / 拿新密码重新登录），几百毫秒起步，机器一忙就超。
+ * 「等一下再看」永远不如「等到真的变了」稳。
+ */
+async function until(fn, timeoutMs = 4000, stepMs = 25) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        if (fn()) return true;
+        if (Date.now() > deadline) return false;
+        await tick(stepMs);
+    }
+}
+
 /** 起一份 app 并等它启动完 */
 async function started(baseUrl, opts) {
     const a = bootApp(baseUrl, opts);
@@ -964,13 +980,20 @@ test('移除成员：确认按钮要按两次才真的移除', async () => {
     assert.ok(!detail.body.members.some((m) => m.id === mate.id), '第二下才真的移出');
 });
 
-test('注销账号：挪到「更多」菜单里，而且要连着确认两次', async () => {
+test('注销账号：收在「账号」屏里，而且要连着确认两次', async () => {
     const u = await user();
     const a = await started(base, { token: u.token });
 
-    // 首页那张「账号」卡片已经没了，入口在更多菜单里
+    // 首页那张「账号」卡片早就没了
     assert.equal(a.el('#home-account-name'), null, '首页不该再挂着账号卡片');
-    assert.ok(a.el('#more-menu').querySelector('#btn-delete-account'), '注销入口该在更多菜单里');
+    // 而且它也不该再挤在「更多」菜单里 —— 那里原来是两个红色挨着，
+    // 注销就贴在「退出登录」下面，而退出恰是那个菜单里最常点的一项
+    assert.equal(a.el('#more-menu').querySelector('#btn-delete-account'), null,
+        '注销不该再挂在更多菜单里');
+    assert.equal(a.el('#more-menu').querySelectorAll('.danger').length, 0,
+        '更多菜单里不该再有红色项（退出是可逆的，红色留给注销）');
+    // 入口改在账号屏
+    assert.ok(a.el('#screen-account').querySelector('#btn-delete-account'), '注销入口该在账号屏里');
 
     // 只认「带指定子元素、且不在关闭动画里」的弹窗：
     //   · 首次打开还有一张内测提示，它也是 .modal
@@ -978,8 +1001,14 @@ test('注销账号：挪到「更多」菜单里，而且要连着确认两次',
     const pick = (sel) => a.doc.querySelectorAll('.modal')
         .filter((m) => !m.hidden && !m._classes.has('closing') && m.querySelector(sel))[0];
 
-    // 第一道提醒：取消之后什么也不该发生
+    // 从更多菜单进账号屏，再点注销
     a.click('#btn-more');
+    a.click('#btn-account');
+    await tick(50);
+    assert.equal(a.activeScreen(), 'account');
+    assert.match(a.el('#account-nickname').textContent, new RegExp(u.nickname), '要显示当前昵称');
+
+    // 第一道提醒：取消之后什么也不该发生
     a.click('#btn-delete-account');
     await tick(50);
     const first = pick('[data-x="cancel"]');
@@ -989,7 +1018,6 @@ test('注销账号：挪到「更多」菜单里，而且要连着确认两次',
     assert.equal((await raw('/api/me', { token: u.token })).status, 200, '取消之后账号还在');
 
     // 两道都走完：先「我明白」，再输密码
-    a.click('#btn-more');
     a.click('#btn-delete-account');
     await tick(50);
     const warn = pick('[data-x="ok"]');
@@ -1007,6 +1035,142 @@ test('注销账号：挪到「更多」菜单里，而且要连着确认两次',
 
     assert.equal((await raw('/api/me', { token: u.token })).status, 401, '两次确认之后账号才真的没了');
 });
+
+// ---------------------------------------------------------------- 账号屏与改密码
+
+test('账号屏：菜单里进得去，返回手势回得来', async () => {
+    const u = await user();
+    const a = await started(base, { token: u.token });
+
+    a.click('#btn-more');
+    a.click('#btn-account');
+    await tick(50);
+    assert.equal(a.activeScreen(), 'account');
+    assert.equal(a.title(), '账号');
+
+    // 返回手势：还原这一屏，而不是把人顶出网页
+    a.win.dispatch('popstate', { state: { dsh: 'home', d: 0 } });
+    await tick(80);
+    assert.equal(a.activeScreen(), 'home');
+});
+
+test('改密码：成功后这台设备不掉线，其他会话全失效', async () => {
+    const u = await user();
+    // 另开一个「别的设备」的会话，用来验证它确实被踢掉
+    const other = await raw('/api/login', { method: 'POST', body: { nickname: u.nickname, password: 'pw123456' } });
+    assert.equal(other.status, 200);
+
+    const a = await started(base, { token: u.token });
+    a.click('#btn-more');
+    a.click('#btn-account');
+    await tick(50);
+    a.click('#btn-change-password');
+    await tick(50);
+
+    const box = a.doc.querySelectorAll('.modal')
+        .filter((m) => !m.hidden && !m._classes.has('closing') && m.querySelector('[data-k="old"]'))[0];
+    assert.ok(box, '应当弹出改密码的框');
+    box.querySelector('[data-k="old"]').value = 'pw123456';
+    box.querySelector('[data-k="new"]').value = 'pw654321';
+    box.querySelector('[data-k="again"]').value = 'pw654321';
+
+    const before = a.storage.getItem('dsh_token');
+    a.click(box.querySelector('[data-x="ok"]'));
+    // 这条路上要跑三次 scrypt，等令牌真的被换掉，别拿固定 sleep 赌
+    assert.ok(await until(() => a.storage.getItem('dsh_token') !== before),
+        '没等到自动重登换上新的令牌');
+    assert.match(a.el('#toast').textContent, /其他设备/, '要说清其他设备的登录已经失效');
+
+    // 这台设备：令牌已经换成新的了，继续能用
+    assert.equal((await raw('/api/me', { token: a.storage.getItem('dsh_token') })).status, 200,
+        '改完密码这台设备该被自动登回来，而不是被扔到登录页');
+    assert.equal(a.activeScreen(), 'account', '不该被踢回登录页');
+
+    // 别的设备：旧令牌失效
+    assert.equal((await raw('/api/me', { token: other.body.token })).status, 401, '其他会话必须失效');
+
+    // 新旧密码：新的能登、旧的不能
+    assert.equal((await raw('/api/login', { method: 'POST', body: { nickname: u.nickname, password: 'pw654321' } })).status, 200);
+    assert.equal((await raw('/api/login', { method: 'POST', body: { nickname: u.nickname, password: 'pw123456' } })).status, 401);
+});
+
+test('改密码：本地先拦掉太短 / 两次不一致 / 和旧的一样，一个请求都不发', async () => {
+    const u = await user();
+    const a = await started(base, { token: u.token });
+    a.click('#btn-more');
+    a.click('#btn-account');
+    await tick(50);
+
+    const openBox = async () => {
+        a.click('#btn-change-password');
+        await tick(50);
+        return a.doc.querySelectorAll('.modal')
+            .filter((m) => !m.hidden && !m._classes.has('closing') && m.querySelector('[data-k="old"]'))[0];
+    };
+    const fill = (box, o, n, again) => {
+        box.querySelector('[data-k="old"]').value = o;
+        box.querySelector('[data-k="new"]').value = n;
+        box.querySelector('[data-k="again"]').value = again;
+    };
+    const isOpen = (box) => !box._classes.has('closing') && !!box.parentNode;
+
+    // 新密码太短
+    let box = await openBox();
+    fill(box, 'pw123456', '12345', '12345');
+    a.click(box.querySelector('[data-x="ok"]'));
+    await tick(50);
+    assert.equal(isOpen(box), true, '太短时不该关掉弹窗');
+    assert.match(box.querySelector('.pw-err').textContent, /6 位/);
+
+    // 两次不一致
+    fill(box, 'pw123456', 'pw654321', 'pw654322');
+    a.click(box.querySelector('[data-x="ok"]'));
+    await tick(50);
+    assert.match(box.querySelector('.pw-err').textContent, /不一样/);
+
+    // 和旧的一样
+    fill(box, 'pw123456', 'pw123456', 'pw123456');
+    a.click(box.querySelector('[data-x="ok"]'));
+    await tick(50);
+    assert.match(box.querySelector('.pw-err').textContent, /不能和现在/);
+
+    // 一路被拦，旧密码必须还有效（说明一个请求都没发出去）
+    assert.equal((await raw('/api/login', { method: 'POST', body: { nickname: u.nickname, password: 'pw123456' } })).status, 200);
+
+    // 取消也一样：什么都不发生
+    a.click(box.querySelector('[data-x="cancel"]'));
+    await tick(50);
+    assert.equal((await raw('/api/me', { token: u.token })).status, 200);
+
+    // 监听只该绑一份（这套测试里的老回归项）
+    assert.equal((a.el('#btn-change-password')._listeners.click || []).length, 1);
+});
+
+test('改密码：旧密码不对时明确报错，账号密码都不变', async () => {
+    const u = await user();
+    const a = await started(base, { token: u.token });
+    a.click('#btn-more');
+    a.click('#btn-account');
+    await tick(50);
+    a.click('#btn-change-password');
+    await tick(50);
+
+    const box = a.doc.querySelectorAll('.modal')
+        .filter((m) => !m.hidden && !m._classes.has('closing') && m.querySelector('[data-k="old"]'))[0];
+    box.querySelector('[data-k="old"]').value = 'cuowumima';
+    box.querySelector('[data-k="new"]').value = 'pw654321';
+    box.querySelector('[data-k="again"]').value = 'pw654321';
+    a.click(box.querySelector('[data-x="ok"]'));
+    // 等到失败真的回来了再断言 —— 否则「什么都没发生」和「还没发生」看起来一模一样
+    assert.ok(await until(() => /原密码/.test(a.el('#toast').textContent)),
+        `没等到报错，toast 现在是：${a.el('#toast').textContent}`);
+
+    // 旧密码没错：两个都还能用，本机也没掉线
+    assert.equal((await raw('/api/login', { method: 'POST', body: { nickname: u.nickname, password: 'pw123456' } })).status, 200,
+        '旧密码没被改掉');
+    assert.equal((await raw('/api/me', { token: u.token })).status, 200, '本机会话还在');
+});
+
 
 test('群组页：群主看不到「退群」，成员看得到；解散只有群主有', async () => {
     const owner = await user();

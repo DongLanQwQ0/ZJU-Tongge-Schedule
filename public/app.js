@@ -332,6 +332,11 @@
             if (m) return openCompare(m);
             return fallbackHome();
         }
+        if (id === 'account') {
+            // 返回手势落到账号屏：登录状态还在就能还原，否则回首页
+            if (state.me) return openAccount();
+            return fallbackHome();
+        }
         if (id === 'auth') return show('auth', { title: '同格' });
         return fallbackHome();
     }
@@ -1244,6 +1249,144 @@
             toast('账号已注销' + extra);
             show('auth', { title: '同格', replace: true });
         } catch (e) { toast(e.message, true); }
+    }
+
+    // ------------------------------------------------------------ 账号屏
+
+    /**
+     * 账号屏。注销从「更多」菜单搬到了这里。
+     *
+     * 搬家的理由不是「更安全」（两道提醒本来就够），是**层级**：
+     * 原来它和「退出登录」一起红着、挨着排在 ⋯ 菜单里 —— 菜单一共 5 项、红色占 2 项，
+     * 而退出登录恰好是那个菜单里最常点的一项。可逆的退出不该和不可逆的注销
+     * 共享同一个红色信号，也不该挤在一起。
+     */
+    async function openAccount() {
+        show('account', { title: '账号', back: goHome });
+        renderAccount();
+    }
+
+    function renderAccount() {
+        $('#account-nickname').textContent = (state.me && state.me.nickname) || '';
+    }
+
+    function initAccount() {
+        $('#btn-change-password').addEventListener('click', changePassword);
+        $('#btn-delete-account').addEventListener('click', function () { deleteAccount(); });
+    }
+
+    /**
+     * 改密码：三个框（旧 / 新 / 再输一遍）。
+     *
+     * **改完之后这台设备也会被踢下线**：服务端 setUserPassword() 结尾是
+     * revokeUserSessions(id)，把该用户的全部会话一起吊销，当前这条也在内
+     * （server.test.js 明确钉着「成功后旧会话全失效」）。所以成功之后要拿新密码
+     * **静默重登**一次，否则用户改完密码随手点一下就被扔回登录页，像是出了 bug。
+     *
+     * 不去改服务端让它保留当前会话：吊销全部是更值钱的性质 —— 万一改密码的人
+     * 是偷到令牌的，他改完就失去访问，不能把新密码据为己有。为省一次自动登录
+     * 去削弱它不划算。
+     */
+    async function changePassword() {
+        var pw = await askNewPassword();
+        if (!pw) return;
+
+        try {
+            await API.changePassword(pw.oldPassword, pw.newPassword);
+        } catch (e) {
+            // 401 旧密码不对、429 错太多次被限速 —— 原样告诉用户，让他重来
+            toast(e.message, true);
+            return;
+        }
+
+        // 令牌这会儿已经随全部会话一起失效了，用新密码把自己登回来
+        try {
+            var r = await API.login(state.me.nickname, pw.newPassword);
+            API.setToken(r.token);
+            toast('密码已改 · 其他设备上的登录都失效了');
+        } catch (e) {
+            // 静默重登也可能失败（比如这个昵称刚被要求过验证码）。
+            // 那就老实退回登录页 —— 别把人留在一个点什么都报错的界面上
+            API.setToken('');
+            state.me = null;
+            toast('密码已改，请用新密码重新登录');
+            show('auth', { title: '同格', replace: true });
+        }
+    }
+
+    /**
+     * 改密码的弹窗：三个框。
+     *
+     * 三类最蠢的错在本地就拦掉（太短 / 两次不一致 / 新密码和旧的一样）：
+     * 这些没必要往服务端跑一趟，而且错了还得把旧密码再打一遍。
+     *
+     * 里面的元素一律用 **class 选择器**，不用 id —— 这个弹窗是拼字符串拼出来的，
+     * 而 frontend.test.js 会检查「app.js 里查的每个 #id 都在 index.html 里」，
+     * 用 id 反而会逼着这些临时元素去 index.html 占坑。
+     *
+     * @returns {Promise<{oldPassword:string, newPassword:string}|null>} 取消为 null
+     */
+    function askNewPassword() {
+        return new Promise(function (resolve) {
+            var modal = document.createElement('div');
+            modal.className = 'modal';
+            modal.innerHTML =
+                '<div class="inner" style="text-align:left;max-width:360px">' +
+                '<h2 style="font-size:16px;margin-bottom:8px">修改密码</h2>' +
+                '<p class="tiny" style="margin-bottom:14px">' +
+                '改完之后，其他设备上的登录会全部失效 —— 这台会帮你自动登回来。</p>' +
+                '<label class="field"><span>现在的密码</span>' +
+                '<input class="input" type="password" data-k="old" maxlength="64" autocomplete="current-password"></label>' +
+                '<label class="field"><span>新密码</span>' +
+                '<input class="input" type="password" data-k="new" maxlength="64" autocomplete="new-password"></label>' +
+                '<label class="field"><span>再输一遍新密码</span>' +
+                '<input class="input" type="password" data-k="again" maxlength="64" autocomplete="new-password"></label>' +
+                '<p class="tiny pw-err" hidden></p>' +
+                '<div class="row" style="margin-top:14px">' +
+                '<button class="btn secondary" data-x="cancel">取消</button>' +
+                '<button class="btn" data-x="ok">改密码</button>' +
+                '</div></div>';
+
+            var field = function (k) { return $('input[data-k="' + k + '"]', modal); };
+            var err = $('.pw-err', modal);
+
+            function fail(msg, el) {
+                err.textContent = msg;
+                err.hidden = false;
+                el.classList.add('invalid');
+                el.focus();
+            }
+            function done(val) {
+                dismiss(modal);
+                resolve(val);
+            }
+
+            // 一动手就把红字和红框撤掉，别让用户对着上一条错误发呆
+            $$('input', modal).forEach(function (i) {
+                i.addEventListener('input', function () {
+                    i.classList.remove('invalid');
+                    err.hidden = true;
+                });
+            });
+
+            modal.addEventListener('click', function (e) {
+                var x = e.target.getAttribute && e.target.getAttribute('data-x');
+                if (x === 'cancel') return done(null);
+                if (x !== 'ok') return;
+
+                var oldPw = field('old').value;
+                var np = field('new').value;
+                var again = field('again').value;
+                if (!oldPw) return fail('先填一下现在的密码', field('old'));
+                if (np.length < 6) return fail('新密码至少 6 位', field('new'));
+                if (np !== again) return fail('两次输入的新密码不一样', field('again'));
+                if (np === oldPw) return fail('新密码不能和现在的密码一样', field('new'));
+                done({ oldPassword: oldPw, newPassword: np });
+            });
+
+            document.body.appendChild(modal);
+            setTimeout(function () { field('old').focus(); }, 50);
+        });
     }
 
     function initHome() {
@@ -2937,7 +3080,9 @@
     }
 
     /**
-     * 顶栏「更多」菜单：管理 / 主题 / 退出都收在这里。
+     * 顶栏「更多」菜单：账号 / 分享 / 主题 / 管理 / 退出都收在这里。
+     *
+     * 这里**一个红色项都没有**了：退出登录是可逆的，红色留给账号屏里那个注销。
      *
      * 选完一项、点别处、按 Esc 都收起 —— 手机上留个浮层在那儿会挡住下面的内容。
      * 判断「点别处」用 closest 而不是 stopPropagation：后者会把顶栏其它按钮一起堵掉。
@@ -2981,8 +3126,9 @@
         menu.addEventListener('click', function () { setOpen(false); });
         // 分享：分享的是站点首页，不是当前这一屏（当前屏的地址里可能带邀请码）
         $('#btn-share').addEventListener('click', function () { shareSite(); });
-        // 注销也收在这里（原来在首页最下方那张「账号」卡片里）
-        $('#btn-delete-account').addEventListener('click', function () { deleteAccount(); });
+        // 账号（昵称 / 改密码 / 注销）单开一屏 —— 注销就是从这儿搬过去的，
+        // 理由见 openAccount() 的注释
+        $('#btn-account').addEventListener('click', function () { openAccount(); });
         document.addEventListener('click', function (e) {
             if (menu.hidden) return;
             var t = e.target;
@@ -2998,6 +3144,7 @@
         initAuth();
         initHome();
         initGroup();
+        initAccount();
         initManageInvites();
         initCompare();
         bindGlobal();

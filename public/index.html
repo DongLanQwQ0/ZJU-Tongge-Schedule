@@ -60,11 +60,13 @@
          现在收进一个「更多」菜单：点 ⋯ 展开，选完一项 / 点别处 / 按 Esc 都收起 -->
     <button class="icon-btn" id="btn-more" title="更多" aria-label="更多" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><circle cx="5.5" cy="12" r="1.9" fill="currentColor"/><circle cx="12" cy="12" r="1.9" fill="currentColor"/><circle cx="18.5" cy="12" r="1.9" fill="currentColor"/></svg></button>
     <div class="more-menu" id="more-menu" hidden>
+        <button class="menu-item" id="btn-account"><span class="menu-ico">👤</span>账号</button>
         <button class="menu-item" id="btn-share"><span class="menu-ico">🔗</span>分享给同学</button>
         <button class="menu-item" id="btn-theme"><span class="menu-ico" id="theme-icon">🌙</span>切换深色 / 浅色</button>
         <button class="menu-item" id="btn-admin" hidden><span class="menu-ico">🛠</span>管理</button>
-        <button class="menu-item danger" id="btn-logout"><span class="menu-ico">⎋</span>退出登录</button>
-        <button class="menu-item danger" id="btn-delete-account"><span class="menu-ico">🗑</span>注销账号</button>
+        <!-- 退出不加 .danger：它是可逆的（重新登录就回来），红色留给不可逆的注销。
+             注销也搬出了这个菜单 —— 见 screen-account -->
+        <button class="menu-item" id="btn-logout"><span class="menu-ico">⎋</span>退出登录</button>
     </div>
 </header>
 
@@ -378,6 +380,38 @@
             </p>
             <div class="list" id="inv-history-list"></div>
         </div>
+    </div>
+</section>
+
+<!-- ==================================================== 账号 -->
+<section class="screen" id="screen-account">
+    <div class="card">
+        <h2>账号</h2>
+        <div class="list">
+            <div class="item">
+                <div class="grow">
+                    <div class="title" id="account-nickname">······</div>
+                    <div class="sub">昵称是全局唯一的，改不了 —— 它是别人找到你的那个名字。</div>
+                </div>
+            </div>
+            <button class="item" id="btn-change-password">
+                <div class="grow">
+                    <div class="title">修改密码</div>
+                    <div class="sub">改完之后，其他设备上的登录会全部失效。</div>
+                </div>
+                <span class="chev">›</span>
+            </button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>危险操作</h2>
+        <p class="tiny" style="margin-bottom:12px">
+            注销之后，账号、课表、备注都会被删除，无法恢复。<br>
+            你建的群会移交给群里最早加入的成员，只有你自己的群会直接解散。
+        </p>
+        <!-- 小号红字，不是整行大红块：它是「来找才看得到」的东西，不该在这个屏里抢戏 -->
+        <button class="row-remove" id="btn-delete-account">注销账号</button>
     </div>
 </section>
 
