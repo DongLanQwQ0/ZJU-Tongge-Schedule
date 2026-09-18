@@ -499,6 +499,10 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .invite-note { padding: 6px 4px 2px; }
 .invite-note .closed-emoji { font-size: 32px; line-height: 1; margin-bottom: 8px; }
 .invite-note p { font-size: 12px; line-height: 1.7; color: var(--text-2); }
+/* 空态里那颗「生成一条邀请链接」：
+   .btn 是 display:block + width:100%（.small 只把宽度改回 auto），在块级里仍然占满一整行；
+   改成 inline-block 让它收缩成一颗小按钮，再靠 .invite 的 text-align:center 居中 */
+.invite-note .btn { display: inline-block; margin-top: 10px; }
 
 /* ------------------------------------------------------------ 模态 */
 
