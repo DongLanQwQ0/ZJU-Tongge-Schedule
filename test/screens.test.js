@@ -1003,6 +1003,122 @@ test('群组页：群主看不到「退群」，成员看得到；解散只有�
     assert.equal(a2.el('#btn-group-delete').hidden, true, '成员看不到解散');
 });
 
+// ---------------------------------------------------------------- 群主转让
+
+/**
+ * 只认「带指定子元素、且不在关闭动画里」的弹窗。
+ * dismiss() 是播完动画才把弹窗摘掉（220ms），不等它走完就会选中上一张；
+ * 动态弹窗叠在一起时这一条是必须的。
+ */
+function modalWith(a, sel) {
+    return a.doc.querySelectorAll('.modal')
+        .filter((m) => !m.hidden && !m._classes.has('closing') && m.querySelector(sel))[0];
+}
+
+test('转让群主：按钮只在「群主且群里有别人」时出现', async () => {
+    const owner = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '转让可见性' } });
+
+    // 群里只有自己：没人可转，藏掉（留一颗点了必然报错的按钮等于设陷阱）
+    const a1 = await started(base, { token: owner.token });
+    a1.click(a1.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a1.el('#btn-transfer-group').hidden, true, '群里没别人时不该有这颗按钮');
+    assert.equal(a1.el('#btn-rename-group').hidden, false, '改名还在（对照）');
+
+    // 来了一个人：出现
+    const mate = await user();
+    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+    const a2 = await started(base, { token: owner.token });
+    a2.click(a2.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a2.el('#btn-transfer-group').hidden, false, '有别人可转时应当出现');
+
+    // 普通成员：没有入口
+    const a3 = await started(base, { token: mate.token });
+    a3.click(a3.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a3.el('#btn-transfer-group').hidden, true, '成员没有转让入口');
+});
+
+test('转让群主：选人 -> 输密码 -> 界面立刻变成普通成员', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '转让流程群' } });
+    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a.el('#btn-transfer-group').hidden, false);
+
+    // 第一步：选人
+    a.click('#btn-transfer-group');
+    await tick(50);
+    const chooser = modalWith(a, '[data-pick]');
+    assert.ok(chooser, '应当弹出选人框');
+    const rows = chooser.querySelectorAll('[data-pick]');
+    assert.equal(rows.length, 1, '只有一位候选人（自己不在候选里）');
+    assert.match(chooser.textContent, new RegExp(mate.nickname), '候选人要写清楚是谁');
+    assert.match(chooser.textContent, /加入于/, '带上入群时间，交接时这是选人的依据');
+    a.click(rows[0]);
+    await tick(50);
+
+    // 第二步：输密码。这里没有第三层确认，密码本身就是那道闸
+    const pwBox = modalWith(a, 'input');
+    assert.ok(pwBox, '选完人要输密码');
+    const input = pwBox.querySelector('input');
+    assert.equal(input.type, 'password', '这一步要的是密码');
+    assert.match(pwBox.textContent, /会变成普通成员/, '要说清权限会没');
+    assert.match(pwBox.textContent, /永久码/, '要说清永久码易主');
+    input.value = 'pw123456';
+    a.click(pwBox.querySelector('[data-x="ok"]'));
+    await tick(400);
+
+    // 服务端真的换了群主
+    const detail = await raw(`/api/groups/${g.body.code}`, { token: mate.token });
+    assert.equal(detail.body.creatorId, mate.id, '新群主应当接手');
+
+    // 界面整个翻过来，靠的全是 isCreator
+    assert.equal(a.el('#btn-rename-group').hidden, true, '改名没了');
+    assert.equal(a.el('#btn-transfer-group').hidden, true, '转让没了');
+    assert.equal(a.el('#btn-group-delete').hidden, true, '解散没了');
+    assert.equal(a.el('#group-settings-card').hidden, true, '群组设置没了');
+    assert.equal(a.el('#btn-manage-invites').hidden, true, '邀请管理没了');
+    assert.equal(a.el('#btn-group-leave').hidden, false, '退群出现了 —— 交完班想走随时能走');
+});
+
+test('转让群主：选人框取消 / 密码框取消，都不发请求', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '转让取消群' } });
+    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+
+    const creatorId = async () =>
+        (await raw(`/api/groups/${g.body.code}`, { token: owner.token })).body.creatorId;
+
+    // 选人框上取消
+    a.click('#btn-transfer-group');
+    await tick(50);
+    a.click(modalWith(a, '[data-x="cancel"]').querySelector('[data-x="cancel"]'));
+    await tick(300);
+    assert.equal(await creatorId(), owner.id, '取消选人后群主不变');
+
+    // 选了人，但在密码那一步取消
+    a.click('#btn-transfer-group');
+    await tick(50);
+    a.click(modalWith(a, '[data-pick]').querySelectorAll('[data-pick]')[0]);
+    await tick(50);
+    a.click(modalWith(a, 'input').querySelector('[data-x="cancel"]'));
+    await tick(300);
+    assert.equal(await creatorId(), owner.id, '密码那步取消也不发请求');
+    assert.equal(a.el('#btn-transfer-group').hidden, false, '界面上也还是群主');
+});
+
 test('分享：菜单里那一项会把站点地址复制出来（垫片里没有系统分享面板）', async () => {
     const u = await user();
     const a = await started(base, { token: u.token });

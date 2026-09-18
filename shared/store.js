@@ -1479,6 +1479,49 @@ function createStore(dataDir, options) {
         });
     }
 
+    /**
+     * 群主把位置让给群里另一位成员。
+     *
+     * 在此之前，群主想交班只有一条路：把自己的账号注销掉（deleteUser 会顺手
+     * 把群主转给最早入群的成员）—— 代价是课表和备注一起没了。这个函数补上
+     * 「人还在、只是不当群主了」这条正常的路径。
+     *
+     * **只改 creatorId 和 updatedAt，别的字段一概不碰。** 这是刻意的：
+     * 界面上的权限全部以 isCreator 为准，所以改完这一个字段，改名 / 审批 /
+     * 邀请码 / 移人 / 解散 / 退群 该藏的藏、该露的露，一行判断都不用新写。
+     *
+     * 群码（g.code）也**不动**。它既是群主的永久码，也是群的永久邀请码
+     * （joinByInvite 特意保留了这条兼容），换掉它会把所有已发出去的链接一起废掉。
+     * 转让后老群主手里那条码仍然能拉人 —— 但普通成员本来就能分享有效邀请码，
+     * 他不比任何一个群友多出权限。真想切断旧码，新群主自己去「换一个新码」。
+     *
+     * @returns {Promise<object>} 转让后的群记录（creatorId 已是新群主）
+     */
+    async function transferOwnership(code, ownerId, targetUserId) {
+        const c = validateCode(code);
+        const target = String(targetUserId == null ? '' : targetUserId);
+        if (!target) throw fail(400, '没指明要转给谁');
+
+        return withLock(`group:${c}`, async () => {
+            const file = await resolveGroupFile(c);
+            if (!file) throw fail(404, '群组不存在或已解散');
+            const g = await readJson(file, () => null);
+            if (!g) throw fail(404, '群组不存在或已解散');
+            // 先认身份，再检验参数 —— 反过来的话，一个不是群主的人拿自己的 id
+            // 来试会收到「你已经是群主了」，那是句假话
+            if (g.creatorId !== ownerId) throw fail(403, '只有群主能转让群组');
+            if (target === ownerId) throw fail(400, '你已经是群主了');
+            // 必须在锁内查：锁外查完、进锁之前对方可能刚退群
+            if (!g.members.some((m) => m.userId === target)) {
+                throw fail(404, '这个人已经不在群里了');
+            }
+            g.creatorId = target;
+            g.updatedAt = now();
+            await writeJsonAtomic(file, g);
+            return g;
+        });
+    }
+
     /** 组装群组详情：成员信息实时取自账号表，改一次名处处生效 */
     async function groupDetail(code, viewerId) {
         const g = await readGroup(code);
@@ -1829,6 +1872,7 @@ function createStore(dataDir, options) {
         leaveGroup,
         removeMember,
         deleteGroup,
+        transferOwnership,
         groupDetail,
         listGroupsForUser
     };

@@ -46,6 +46,7 @@
 | POST | `/api/groups/:code/join` | 入群（或提交申请） |
 | GET | `/api/groups/:code` | 群详情（含重合统计） |
 | PUT | `/api/groups/:code/settings` | 群设置（改名 / 入群策略 / 备注） |
+| POST | `/api/groups/:code/transfer` | 转让群主（**要密码**，复用改密码那条限流桶） |
 | POST | `/api/groups/:code/rotate-code` | 换群码 |
 | POST / DELETE | `/api/groups/:code/invites…` | 邀请链接：新建 / 作废 / 删除存档 |
 | POST / DELETE | `/api/groups/:code/requests/:userId` | 审批进群申请 |
@@ -71,8 +72,9 @@ node server.js --revoke-admin 你的昵称   # 取消管理员
 npm test        # node --test，零依赖
 ```
 
-实测：**259 项全部通过**（Node 24）。覆盖 ICS 解析、地点分级、教学周、重合统计、
+实测：**275 项全部通过**（Node 24）。覆盖 ICS 解析、地点分级、教学周、重合统计、
 导出视图、账号/会话/群组存储、注册验证码（出题/画图/过期/一次性核销）、管理页、
+群主转让（密码校验 + 限流共用桶 + 越权矩阵 + 群码不变）、
 前端接线与六个屏幕的 DOM 全量扫描，以及一次完整的 HTTP 端到端旅程和一组安全回归
 （穿越矩阵、限流、415/413、响应头）、存储加密（AAD 跨用户/跨群/跨用途必须失败、
 迁移幂等与回滚、四种"拒绝启动"）、会话令牌哈希化（含老数据升级不踢人下线）、

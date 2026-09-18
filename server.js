@@ -778,6 +778,41 @@ async function createServer(options = {}) {
             return { ok: true };
         }],
 
+        // 群主把位置让给群里另一位成员。**必须带密码** —— 转让和改名不一样：
+        // 改名可逆，转让是把控制权交出去（老群主权限全失、接手的人持续掌控）。
+        // 只认令牌的话，一次令牌泄露就等于群被接管。
+        ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/transfer$/, async (req, res, m) => {
+            const { user } = await requireUser(req);
+            const body = await readBody(req, res);
+            const ip = clientIp(req);
+
+            // 和改密码同一把刹车，连键都是同一个：同一个人的密码共用一个计数器。
+            // 分开建桶等于把猜密码的额度翻倍 —— 攻击者两边各猜一半，两边的阈值都还没到。
+            const throttle = 'pw:' + user.id;
+            if (limiter.loginFail.isLimited(throttle)) {
+                store.appendAudit({ event: 'group_transfer_blocked', nickname: user.nickname, ip });
+                throw fail(429, '密码错误次数太多，歇十分钟再来');
+            }
+            // verifyLogin 是纯凭据校验（不记登录活动），所以不会污染登录次数与最后登录时间
+            if (!(await store.verifyLogin(user.nickname, body.password))) {
+                limiter.loginFail.check(throttle);   // 只计失败
+                throw fail(401, '密码不对，转让已取消');
+            }
+            limiter.loginFail.reset(throttle);       // 成功了就清账
+
+            const g = await store.transferOwnership(validateCode(m[1]), user.id, body.targetId);
+            const heir = await store.getUser(String(body.targetId));
+            store.appendAudit({
+                event: 'group_transfer',
+                by: user.nickname,                    // 老群主
+                nickname: heir ? heir.nickname : '',  // 新群主
+                group: g.name,
+                code: g.code,
+                ip
+            });
+            return { ok: true, code: g.code, ownerId: g.creatorId };
+        }],
+
         // 群主换掉群自己的码：以前发出去的所有旧链接一起失效。
         // 主要给改版前那批 6 位老群用 —— 老码空间小，早点换掉更稳。
         ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/rotate-code$/, async (req, res, m) => {

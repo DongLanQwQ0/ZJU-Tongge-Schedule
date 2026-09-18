@@ -108,7 +108,7 @@ async function scene() {
 
 // ---------------------------------------------------------------- 路由体检
 
-test('25 条路由全部真的挂上了（没有一条落到「接口不存在」）', async () => {
+test('26 条路由全部真的挂上了（没有一条落到「接口不存在」）', async () => {
     const code = '12345678';
     const uid = 'u_nobody01';
     // [方法, 路径, 该路由「正常响应」时不该出现的状态]
@@ -127,6 +127,7 @@ test('25 条路由全部真的挂上了（没有一条落到「接口不存在�
         ['POST', `/api/groups/${code}/join`],
         ['GET', `/api/groups/${code}`],
         ['PUT', `/api/groups/${code}/settings`],
+        ['POST', `/api/groups/${code}/transfer`],
         ['PUT', `/api/groups/${code}/self-remark`],
         ['POST', `/api/groups/${code}/requests/${uid}/approve`],
         ['DELETE', `/api/groups/${code}/requests/${uid}`],
@@ -139,7 +140,7 @@ test('25 条路由全部真的挂上了（没有一条落到「接口不存在�
         ['POST', `/api/admin/users/${uid}/reset-password`],
         ['DELETE', `/api/admin/groups/${code}`]
     ];
-    assert.equal(routes.length, 25, '路由清单要和 server.js 对齐');
+    assert.equal(routes.length, 26, '路由清单要和 server.js 对齐');
 
     for (const [method, p] of routes) {
         const r = await api(p, { method, body: method === 'GET' ? undefined : {} });

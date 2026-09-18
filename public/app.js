@@ -558,7 +558,9 @@
         admin_revoke_cli: '撤销管理员（命令行）',
         admin_delete_user: '删除账号',
         admin_delete_group: '解散群组',
-        admin_reset_password: '重置密码'
+        admin_reset_password: '重置密码',
+        group_transfer: '转让群主',
+        group_transfer_blocked: '转让被拦（密码错太多）'
     };
 
     /** 审计日志一行的说明文字，只挑存在的字段拼 */
@@ -1244,6 +1246,10 @@
 
         $('#group-name').firstChild.nodeValue = g.name;
         $('#btn-rename-group').hidden = !iAmOwner;
+        // 转让：群主才有资格，而且群里得真有别人可转。
+        // 没别人时藏掉 —— 留一颗点了必然报错的按钮等于设陷阱，和下面 #btn-group-leave 同理
+        var transferable = g.members.filter(function (m) { return !memberHasMe(m); });
+        $('#btn-transfer-group').hidden = !iAmOwner || !transferable.length;
         renderUploadHint();
         $('#btn-group-delete').hidden = !iAmOwner;
         // 群主没有「退群」这条路 —— 服务端也会拒（「你是群主，可以直接解散群组」），
@@ -1452,8 +1458,107 @@
         } catch (e) { toast(e.message, true); }
     }
 
+    /**
+     * 选人弹框：把候选人列出来让人点。
+     *
+     * 这里不用 askText 那种「把名字敲进去」——群里显示的是备注名（我给 TA 起的、
+     * 或 TA 给自己设的），照着显示名去敲真名很容易敲错。点一下没有认错人的余地。
+     *
+     * @param {{title:string, hint:string, members:Array}} opts
+     * @returns {Promise<object|null>} 选中的成员；取消为 null
+     */
+    function pickMember(opts) {
+        return new Promise(function (resolve) {
+            var modal = document.createElement('div');
+            modal.className = 'modal';
+            modal.innerHTML =
+                '<div class="inner" style="text-align:left;max-width:360px">' +
+                '<h2 style="font-size:16px;margin-bottom:10px"></h2>' +
+                '<p class="tiny" style="margin-bottom:10px"></p>' +
+                '<div class="list pick-list"></div>' +
+                '<div class="row" style="margin-top:12px">' +
+                '<button class="btn secondary" data-x="cancel">取消</button>' +
+                '</div></div>';
+            $('h2', modal).textContent = opts.title || '';
+            var hint = $('p', modal);
+            if (opts.hint) hint.textContent = opts.hint; else hint.remove();
+
+            // 按加入时间从早到晚：交接时「谁在群里待得久」常常就是选人的依据
+            $('.pick-list', modal).innerHTML = opts.members
+                .slice()
+                .sort(function (a, b) { return (a.joinedAt || 0) - (b.joinedAt || 0); })
+                .map(function (m) {
+                    var np = nameParts(m);
+                    return '<button class="item pick" data-pick="' + esc(m.id) + '">' +
+                        '<div class="grow"><div class="title">' + esc(np.shown) + '</div>' +
+                        '<div class="sub">' + (np.real ? esc(np.real) + ' · ' : '') +
+                        '加入于 ' + fmtTime(m.joinedAt) + ' · ' + m.courseCount + ' 个时段' +
+                        '</div></div></button>';
+                }).join('');
+
+            function done(val) {
+                dismiss(modal);
+                resolve(val);
+            }
+            modal.addEventListener('click', function (e) {
+                var pick = e.target.closest && e.target.closest('[data-pick]');
+                if (pick) {
+                    var id = pick.getAttribute('data-pick');
+                    return done(opts.members.filter(function (x) { return x.id === id; })[0] || null);
+                }
+                var x = e.target.getAttribute && e.target.getAttribute('data-x');
+                if (x === 'cancel') done(null);
+            });
+            document.body.appendChild(modal);
+        });
+    }
+
+    /**
+     * 转让群主：**选人 → 输密码**，两步。
+     *
+     * 密码那一步由服务端校验（POST /api/groups/:code/transfer），不是在这儿做个样子 ——
+     * 转让意味着控制权易手（老群主权限全失、接手的人持续掌控），光有令牌不该够。
+     *
+     * 不再叠第三层确认：移出成员用「按两次」是因为那颗按钮没有别的闸；
+     * 这里密码本身就是最强的「我是认真的」。和注销账号同构。
+     */
+    async function transferGroup() {
+        if (!state.group) return;
+        var g = state.group;
+        var others = g.members.filter(function (m) { return !memberHasMe(m); });
+        if (!others.length) return toast('群里还没有别人，没人可以接手', true);
+
+        var target = await pickMember({
+            title: '把群主转让给谁',
+            hint: 'TA 会成为群主。转让后你留在这个群里，只是变成普通成员。',
+            members: others
+        });
+        if (!target) return;
+
+        var shown = displayName(target);
+        var pw = await askText({
+            title: '转让群主 · 最后一步',
+            hint: '「' + shown + '」会成为群主：能改群名、审批进群、管理邀请码、移除成员、解散群组。' +
+                  '你会变成普通成员，这些权限立刻失效；你现在这条永久码会变成 TA 的。',
+            placeholder: '输入密码确认',
+            password: true,
+            maxlength: 64
+        });
+        if (pw == null) return;
+
+        try {
+            await API.transferGroup(g.code, target.id, pw);
+            state.group = await API.groupDetail(g.code);
+            // 首页群列表上那行「你是群主」也得跟着变，所以这份数据要一起刷新
+            await loadGroups();
+            renderGroup();
+            toast('已把群主转让给「' + shown + '」');
+        } catch (e) { toast(e.message, true); }
+    }
+
     function initGroupSettings() {
         $('#btn-rename-group').addEventListener('click', renameGroup);
+        $('#btn-transfer-group').addEventListener('click', transferGroup);
         $('#join-mode').addEventListener('click', async function (e) {
             var btn = e.target.closest('button[data-mode]');
             if (!btn || !state.group) return;

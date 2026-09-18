@@ -1012,3 +1012,232 @@ test('邀请链接：过期后群主能换一条新的，新人立刻能进', as
     } finally { await t.close(); }
 });
 
+// ---------------------------------------------------------------- 群主转让
+
+/**
+ * 转让群主用的干净实例：一个群主 + 一个已在群里的成员 + 一个局外人。
+ *
+ * loginFail 阈值压到 3，好让「密码错到被限流」那条用例几步就能撞到上限
+ * （默认 30 次要跑三十轮，没必要）。
+ */
+async function transferSetup() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcc-transfer-'));
+    const s = await createServer({ vault: false, captcha: false,
+        dataDir: dir, port: 0, skipCleanup: true,
+        limits: {
+            join: { windowMs: 60000, max: 1000, message: 'x' },
+            loginFail: { windowMs: 600000, max: 3, message: '失败次数太多' }
+        }
+    });
+    await new Promise((r) => s.listen(0, '127.0.0.1', r));
+    const ra = `http://127.0.0.1:${s.address().port}`;
+    const call = (pathname, opts = {}) => {
+        const headers = {};
+        if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+        if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+        return fetch(ra + pathname, {
+            method: opts.method || 'GET', headers,
+            body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
+        });
+    };
+    const owner = await (await call('/api/register', {
+        method: 'POST', body: { nickname: '老群主', password: 'password1' }
+    })).json();
+    const g = await (await call('/api/groups', {
+        method: 'POST', token: owner.token, body: { name: '交接测试群' }
+    })).json();
+    const mate = await newUser(call, '接手的人');
+    await call(`/api/groups/${g.code}/join`, { method: 'POST', token: mate.token });
+    const stranger = await newUser(call, '局外人');
+
+    // 直接读群文件：验的是落盘状态，不是接口的自述
+    const groupFile = () => JSON.parse(fs.readFileSync(path.join(dir, 'groups', `${g.code}.json`), 'utf8'));
+
+    return {
+        dir, s, ra, call, owner, mate, stranger, code: g.code, groupFile,
+        close: async () => { await new Promise((r) => s.close(r)); fs.rmSync(dir, { recursive: true, force: true }); }
+    };
+}
+
+/** 一次转让请求 */
+function transfer(t, token, targetId, password) {
+    return t.call(`/api/groups/${t.code}/transfer`, {
+        method: 'POST', token, body: { targetId, password }
+    });
+}
+
+/**
+ * 等审计出现满足条件的记录。
+ *
+ * `appendAudit()` 是**不阻塞响应**的（写失败也只打一条警告），所以响应回来的
+ * 那一刻日志未必已经落盘 —— 直接读会有概率读空。这里轮询到条件成立为止。
+ */
+async function waitAudit(t, predicate, timeoutMs = 1500) {
+    const until = Date.now() + timeoutMs;
+    let audit = [];
+    for (;;) {
+        audit = await t.s.store.readAudit(200);
+        if (predicate(audit) || Date.now() > until) return audit;
+        await new Promise((r) => setTimeout(r, 20));
+    }
+}
+
+test('转让群主：密码不对就取消，什么都不改', async () => {
+    const t = await transferSetup();
+    try {
+        const before = t.groupFile().creatorId;
+        const r = await transfer(t, t.owner.token, t.mate.userId, '不是这个密码');
+        assert.equal(r.status, 401);
+        assert.match((await r.json()).error, /转让已取消/);
+        assert.equal(t.groupFile().creatorId, before, '密码不对时群主不能变');
+    } finally { await t.close(); }
+});
+
+test('转让群主：只有群主能转，成员拿着正确密码也不行', async () => {
+    const t = await transferSetup();
+    try {
+        // 成员把群主转给自己——密码是对的，但身份不对
+        const r = await transfer(t, t.mate.token, t.mate.userId, 'password1');
+        assert.equal(r.status, 403);
+        assert.match((await r.json()).error, /只有群主/);
+        assert.equal(t.groupFile().creatorId, t.owner.userId, '群主不该变');
+
+        // 成员也不能把群主转给第三个人
+        const r2 = await transfer(t, t.mate.token, t.stranger.userId, 'password1');
+        assert.equal(r2.status, 403);
+    } finally { await t.close(); }
+});
+
+test('转让群主：转给群外的人 404，转给自己 400', async () => {
+    const t = await transferSetup();
+    try {
+        const outside = await transfer(t, t.owner.token, t.stranger.userId, 'password1');
+        assert.equal(outside.status, 404);
+        assert.match((await outside.json()).error, /不在群里/);
+
+        const self = await transfer(t, t.owner.token, t.owner.userId, 'password1');
+        assert.equal(self.status, 400);
+        assert.match((await self.json()).error, /已经是群主/);
+
+        assert.equal(t.groupFile().creatorId, t.owner.userId);
+    } finally { await t.close(); }
+});
+
+test('转让群主：成功后权限翻转，老群主仍是普通成员', async () => {
+    const t = await transferSetup();
+    try {
+        const r = await transfer(t, t.owner.token, t.mate.userId, 'password1');
+        assert.equal(r.status, 200);
+        assert.equal((await r.json()).ownerId, t.mate.userId);
+        assert.equal(t.groupFile().creatorId, t.mate.userId, '落盘的 creatorId 也换了');
+
+        // 新群主：拿得到自己的永久码，也能改群名
+        const asNew = await (await t.call(`/api/groups/${t.code}`, { token: t.mate.token })).json();
+        assert.equal(asNew.ownerCode, t.code, '永久码归新群主');
+        assert.equal(asNew.isCreator, true);
+        assert.equal((await t.call(`/api/groups/${t.code}/settings`, {
+            method: 'PUT', token: t.mate.token, body: { name: '新群主改的名' }
+        })).status, 200);
+
+        // 老群主：改不了设置，但看得到群、而且还留在成员列表里
+        const asOld = await t.call(`/api/groups/${t.code}/settings`, {
+            method: 'PUT', token: t.owner.token, body: { name: '老群主改的名' }
+        });
+        assert.equal(asOld.status, 403, '老群主不再能改设置');
+
+        const oldView = await (await t.call(`/api/groups/${t.code}`, { token: t.owner.token })).json();
+        assert.equal(oldView.isCreator, false);
+        assert.equal(oldView.ownerCode, null, '永久码不再给老群主');
+        assert.equal(oldView.members.length, 2, '成员数不变');
+        assert.ok(oldView.members.some((m) => m.id === t.owner.userId), '老群主还在群里');
+
+        // 首页群列表对老群主也不再写「你是群主」
+        const mine = await (await t.call('/api/me/groups', { token: t.owner.token })).json();
+        assert.equal(mine.groups.find((g) => g.code === t.code).isCreator, false);
+    } finally { await t.close(); }
+});
+
+test('转让群主：群码不动，老群主那条码仍然能拉人', async () => {
+    const t = await transferSetup();
+    try {
+        const before = t.groupFile().code;
+        assert.equal((await transfer(t, t.owner.token, t.mate.userId, 'password1')).status, 200);
+        assert.equal(t.groupFile().code, before, '转让不该换群码');
+
+        // 群码的兼容语义没被破坏：新人照样能靠它进群
+        const late = await newUser(t.call, '后来的');
+        const join = await t.call(`/api/groups/${t.code}/join`, { method: 'POST', token: late.token });
+        assert.equal(join.status, 200);
+    } finally { await t.close(); }
+});
+
+test('转让群主：老群主转让后能自己退群（不再被「你是群主」挡住）', async () => {
+    const t = await transferSetup();
+    try {
+        assert.equal((await t.call(`/api/groups/${t.code}/me`, {
+            method: 'DELETE', token: t.owner.token, body: {}
+        })).status, 400, '转让前：群主不能退群');
+
+        await transfer(t, t.owner.token, t.mate.userId, 'password1');
+
+        assert.equal((await t.call(`/api/groups/${t.code}/me`, {
+            method: 'DELETE', token: t.owner.token, body: {}
+        })).status, 200, '转让后：退群这条路打开了');
+        assert.equal(t.groupFile().members.length, 1);
+    } finally { await t.close(); }
+});
+
+test('转让群主：密码连错会被限流，且限流键与改密码共用', async () => {
+    const t = await transferSetup();
+    try {
+        // 阈值是 3：前三次 401，第四次开始 429
+        for (let i = 0; i < 3; i++) {
+            assert.equal((await transfer(t, t.owner.token, t.mate.userId, '错的')).status, 401);
+        }
+        const blocked = await transfer(t, t.owner.token, t.mate.userId, 'password1');
+        assert.equal(blocked.status, 429, '错够次数之后连正确密码也先挡住');
+        assert.match((await blocked.json()).error, /歇十分钟/);
+
+        // 共用同一个桶：改密码那条路这会儿也被一起挡住
+        const pw = await t.call('/api/me/password', {
+            method: 'PUT', token: t.owner.token,
+            body: { oldPassword: 'password1', newPassword: 'password2' }
+        });
+        assert.equal(pw.status, 429, '两条路共用一个计数器，不能各猜一半');
+
+        // 群主始终没变
+        assert.equal(t.groupFile().creatorId, t.owner.userId);
+    } finally { await t.close(); }
+});
+
+test('转让群主：审计记一行，含双方与群信息，且不含密码', async () => {
+    const t = await transferSetup();
+    try {
+        await transfer(t, t.owner.token, t.mate.userId, 'password1');
+
+        const audit = await waitAudit(t, (a) => a.some((e) => e.event === 'group_transfer'));
+        const ev = audit.find((e) => e.event === 'group_transfer');
+        assert.ok(ev, '审计里应该有 group_transfer');
+        assert.equal(ev.by, '老群主');
+        assert.equal(ev.nickname, '接手的人');
+        assert.equal(ev.group, '交接测试群');
+        assert.equal(ev.code, t.code);
+        assert.equal(JSON.stringify(audit).includes('password1'), false, '审计里不能出现明文密码');
+    } finally { await t.close(); }
+});
+
+test('转让群主：密码错到被限流也会留一条审计', async () => {
+    const t = await transferSetup();
+    try {
+        for (let i = 0; i < 3; i++) {
+            await transfer(t, t.owner.token, t.mate.userId, '错的');
+        }
+        await transfer(t, t.owner.token, t.mate.userId, 'password1');
+
+        const audit = await waitAudit(t, (a) => a.some((e) => e.event === 'group_transfer_blocked'));
+        const events = audit.map((e) => e.event);
+        assert.ok(events.includes('group_transfer_blocked'), '被限流的那一刻要有记录');
+        assert.equal(events.includes('group_transfer'), false, '被拦住就不该有成功的转让记录');
+    } finally { await t.close(); }
+});
+

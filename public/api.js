@@ -174,6 +174,11 @@
         joinGroup: function (code) { return request('api/groups/' + code + '/join', 'POST', {}); },
         groupDetail: function (code) { return request('api/groups/' + code); },
         groupSettings: function (code, patch) { return request('api/groups/' + code + '/settings', 'PUT', patch); },
+        // 转让群主：密码是硬要求（服务端校验），不是界面装饰
+        transferGroup: function (code, targetId, password) {
+            return request('api/groups/' + code + '/transfer', 'POST',
+                { targetId: targetId, password: password });
+        },
         setSelfRemark: function (code, remark) {
             return request('api/groups/' + code + '/self-remark', 'PUT', { remark: remark });
         },
