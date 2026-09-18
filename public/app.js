@@ -212,6 +212,29 @@
         return m ? decodeURIComponent(m[1]) : null;
     }
 
+    /**
+     * 把邀请码从地址栏摘掉。
+     *
+     * 不摘的话每次刷新都会拿同一个码再进一次群；链接要是已经过期，还会每次弹一句红字
+     * （joinByInvite 先校验码再判成员身份，所以进过群也没用）；成员把地址栏一复制，
+     * 又等于把这个码转手了一次。
+     *
+     * 只动 code 这一个参数：别的查询串和 hash 都留着。
+     * 第三个参数传**相对地址** —— 正式服挂在反向代理的子路径下（/tongge/），
+     * 绝对路径会把子路径拼没。
+     */
+    function clearInviteCode() {
+        var search = location.search || '';
+        var parts = search.replace(/^\?/, '').split('&').filter(function (kv) {
+            // 精确比 key，不用 indexOf('code=')：那会把 xcode= 这种参数一起删掉
+            return kv && kv.split('=')[0] !== 'code';
+        });
+        var next = parts.length ? '?' + parts.join('&') : '';
+        if (next === search) return;        // 本来就没有，别白动一次历史记录
+        // 状态原样传回去：导航栈（{dsh, d}）就存在那里，清掉的话返回手势立刻失效
+        history.replaceState(history.state, '', location.pathname + next + (location.hash || ''));
+    }
+
     // ------------------------------------------------------------ 屏幕切换与浏览器历史
 
     var backTo = null;
@@ -1266,6 +1289,8 @@
     async function joinByCode(code) {
         try {
             var r = await API.joinGroup(code);
+            // 码用掉了：进群和「已提交申请」都算，它的任务到此结束
+            clearInviteCode();
             await loadGroups();
             if (r.pending) {
                 toast('已申请加入「' + r.name + '」，等群主同意');
@@ -1277,6 +1302,10 @@
             return true;
         } catch (e) {
             if (e.status === 401) { state.pendingCode = code; return false; }
+            // 链接本身不成立（404 没这个码 / 410 过期或被作废）：也擦掉。
+            // 留着它只会每次刷新都重弹一遍这个红字，而它永远不会再成功。
+            // 其余情况（限流 429、群满 400、网络断了 0）码还是好的，留着让用户能再试
+            if (e.status === 404 || e.status === 410) clearInviteCode();
             toast(e.message, true);
             return false;
         }

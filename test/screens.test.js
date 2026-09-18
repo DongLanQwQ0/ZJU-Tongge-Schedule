@@ -378,13 +378,35 @@ function bootApp(baseUrl, opts = {}) {
 
     const hist = {
         _stack: [{ dsh: 'auth', d: 0 }],
-        pushState(s) { hist._stack.push(s); },
-        replaceState(s) { hist._stack[hist._stack.length - 1] = s; },
+        // 垫片只实现 app.js 真正用到的那部分，这里补两样：
+        //   · state：app.js 清邀请码那步会把 history.state 原样传回去（导航栈在里面）
+        //   · 第三个参数（新地址）：不记下来的话，「地址栏擦干净了没有」在测试里根本看不到
+        state: null,
+        lastUrl: null,
+        pushState(s, _title, url) {
+            hist._stack.push(s);
+            hist.state = s;
+            if (url != null) hist.applyUrl(url);
+        },
+        replaceState(s, _title, url) {
+            hist._stack[hist._stack.length - 1] = s;
+            hist.state = s;
+            if (url != null) hist.applyUrl(url);
+        },
+        applyUrl(url) {
+            hist.lastUrl = String(url);
+            const u = new URL(String(url), baseUrl + '/');
+            loc.pathname = u.pathname;
+            loc.search = u.search;
+            loc.hash = u.hash;
+            loc.href = u.href;
+        },
         back() {}
     };
     const locUrl = new URL(baseUrl);
     const loc = {
         search: opts.search || '',
+        hash: '',
         href: baseUrl + '/',
         pathname: '/',
         hostname: locUrl.hostname,
@@ -473,7 +495,9 @@ function bootApp(baseUrl, opts = {}) {
         },
         title: () => doc.querySelector('#topbar-title').textContent,
         win,
-        storage
+        storage,
+        history: hist,
+        location: loc
     };
     return api;
 }
@@ -1308,6 +1332,79 @@ test('页脚版本号：服务端给什么就显示什么（连登录页都看�
     assert.equal(el.hidden, false, '拿到版本号之后要显示出来');
     // 版本号来自服务端读的那份 package.json —— 页面里写死的那个字符串不算数
     assert.match(el.textContent, new RegExp('^v' + pkg.version.replace(/\./g, '\\.')));
+});
+
+// ---------------------------------------------------------------- 邀请码与地址栏
+
+test('邀请链接：进群之后地址栏里的码要擦掉，别每次加载都重新进一次群', async () => {
+    const owner = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '擦码群' } });
+    const code = g.body.code;
+    const mate = await user();
+
+    // 带着同学发来的链接进来（后面还缀着别人的参数）
+    const a = await started(base, { token: mate.token, search: `?code=${code}&from=wechat` });
+    await tick(350);
+
+    assert.equal((await raw(`/api/groups/${code}`, { token: mate.token })).status, 200, '应当已经进群');
+    assert.ok(a.history.lastUrl, '应当 replaceState 过一次，把地址栏改掉');
+    assert.equal(a.history.lastUrl.includes('code='), false, '码不该还挂在地址栏上');
+    assert.match(a.history.lastUrl, /from=wechat/, '不该顺手把别人的参数一起删掉');
+    assert.equal(a.history.state.dsh, 'group', '导航状态要留着，否则返回手势会失效');
+    assert.equal(a.location.search, '?from=wechat', '垫片里的 location 也要跟着更新');
+});
+
+test('邀请链接：还没登录时码不能丢，登录之后才擦', async () => {
+    const owner = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '登录后进群' } });
+    const code = g.body.code;
+    const mate = await user();       // 已经注册好了，只是这次先不登录
+
+    // 没令牌 + 带码进来：停在登录页
+    const a = await started(base, { search: `?code=${code}` });
+    await tick(250);
+    assert.equal(a.activeScreen(), 'auth');
+    assert.equal(a.history.lastUrl, null,
+        '还没进群，码必须留在地址栏 —— 新用户在登录页刷新一下不能把它弄丢');
+
+    // 用界面登录：登录成功后会自动拿地址里的码去进群
+    a.el('#auth-nickname').value = mate.nickname;
+    a.el('#auth-password').value = 'pw123456';
+    a.submit('#auth-form');
+    await tick(500);
+
+    assert.equal((await raw(`/api/groups/${code}`, { token: mate.token })).status, 200, '登录后应当进群了');
+    assert.ok(a.history.lastUrl, '这时候才该擦');
+    assert.equal(a.history.lastUrl.includes('code='), false);
+});
+
+test('邀请链接：链接已经作废时也要擦掉，不然每次刷新都重弹一遍红字', async () => {
+    const owner = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '死链群' } });
+    const code = g.body.code;
+    const inv = await raw(`/api/groups/${code}/invites`, {
+        method: 'POST', token: owner.token, body: { ttl: 'never' }
+    });
+    // 群主把它作废掉 —— 之后这个码永远不会再成功
+    await raw(`/api/groups/${code}/invites/${inv.body.invite.code}`, {
+        method: 'DELETE', token: owner.token, body: {}
+    });
+    const late = await user();
+
+    const a = await started(base, { token: late.token, search: `?code=${inv.body.invite.code}` });
+    await tick(350);
+
+    assert.equal((await raw(`/api/groups/${code}`, { token: late.token })).status, 403, '作废的码进不去');
+    assert.equal(a.history.lastUrl.includes('code='), false,
+        '死码留着只会每次刷新都重弹一遍红字，而它永远不会再成功');
+});
+
+test('邀请链接：没有码的正常启动不该去动历史记录', async () => {
+    const u = await user();
+    const a = await started(base, { token: u.token });
+    await tick(250);
+
+    assert.equal(a.history.lastUrl, null, '本来就没有码，别白 replaceState 一次');
 });
 
 // ---------------------------------------------------------------- 成员分享开关
