@@ -26,7 +26,8 @@ async function seed(dir) {
     await store.init();
     const u = await store.createUser('小明', 'password1');
     const g = await store.createGroup(u.id, '计科2201组团');
-    return { code: g.code, nickname: '小明' };
+    // 入群接口只认票（群码是地址，不是票），所以这里连票一起给出去
+    return { code: g.code, ticket: g.invites[0].code, nickname: '小明' };
 }
 
 async function startServer(dir, trustedProxies) {
@@ -56,7 +57,7 @@ test('同一个反代后面：不同客户端的额度互不占用', async () =>
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ nickname: info.nickname, password: 'password1' })
         }).then((r) => r.json());
-        const url = `/api/groups/${info.code}/join`;
+        const url = `/api/groups/${info.ticket}/join`;
 
         // 客户端 A：两次用完自己的额度，第三次被拦
         assert.equal(await post(base, url, { 'x-forwarded-for': '1.1.1.1' }, login.token), 200);
@@ -82,7 +83,7 @@ test('直连方不可信时：自己填的 X-Forwarded-For 一律不算数', asy
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ nickname: info.nickname, password: 'password1' })
         }).then((r) => r.json());
-        const url = `/api/groups/${info.code}/join`;
+        const url = `/api/groups/${info.ticket}/join`;
 
         // 三次请求伪造三个不同 IP，但桶是同一个（直连地址），第三次照样被拦
         assert.equal(await post(base, url, { 'x-forwarded-for': '3.3.3.3' }, login.token), 200);

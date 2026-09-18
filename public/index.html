@@ -273,11 +273,20 @@
         </div>
 
         <!-- 群主关掉「成员分享」之后，成员这边换上这一块（卡片留着，只换内容） -->
-        <div class="invite-closed" id="invite-closed" hidden>
+        <div class="invite-note" id="invite-closed" hidden>
             <div class="closed-emoji">🔒</div>
             <p>群主关掉了「成员分享」<br>
                 想让同学进来？用群主发出来的那条链接，或者直接找他要一条 ——<br>
                 他那边随时能生成。你负责把人喊来，码的事交给群主 (๑•̀ㅂ•́)و✧</p>
+        </div>
+
+        <!-- 一枚能用的票都没有（群主全收回去了）。文案由 app.js 按「你是群主吗」分两套：
+             群主看到的是出口（当场生成一条），成员看到的是「找群主要一条」。
+             这张卡片绝不能是个死胡同 —— 那正是这次要修的毛病 -->
+        <div class="invite-note" id="invite-empty" hidden>
+            <div class="closed-emoji" id="invite-empty-emoji">🫥</div>
+            <p id="invite-empty-text"></p>
+            <button class="btn small" id="btn-invite-create" style="margin-top:10px" hidden>生成一条邀请链接</button>
         </div>
 
         <!-- 多个链接的管理搬到独立页面，这里只留一个入口 -->
@@ -361,15 +370,6 @@
             <input class="input" id="inv-label" maxlength="12" placeholder="比如：给 3 班的">
         </label>
         <button class="btn" id="btn-inv-gen" style="margin-top:10px">＋ 生成一条新链接</button>
-    </div>
-
-    <div class="card">
-        <h2>群自己的码</h2>
-        <p class="tiny" style="margin-bottom:10px">
-            这是群的永久地址 <b class="mono" id="inv-owner-code">······</b>，
-            改版前发出去的链接用的就是它。换掉之后老链接全部失效。
-        </p>
-        <button class="btn danger" id="btn-inv-rotate">换一个新码</button>
     </div>
 
     <div class="card">

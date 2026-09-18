@@ -582,6 +582,14 @@ async function raw(pathname, opts = {}) {
     return { status: res.status, body: await res.json().catch(() => null) };
 }
 
+/** 群主视角：这个群现在能用的那枚票 —— 入群只认票，群码是地址（见设计文档） */
+async function liveTicket(code, ownerToken) {
+    const r = await raw(`/api/groups/${code}`, { token: ownerToken });
+    const live = (r.body.invites || []).filter((i) => i.active);
+    assert.ok(live.length, `群 ${code} 没有能用的票，测试进不去`);
+    return live[0].code;
+}
+
 const COURSE = {
     course: '大学英语Ⅲ', day: 1, startPeriod: 3, endPeriod: 4,
     startTime: '10:00', endTime: '11:35', location: '紫金港东6-328',
@@ -881,7 +889,9 @@ test('首页群组列表 -> 群组页 -> 比对页，一路点得通', async () 
     const mate = await user(true);
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '扫描群' } });
     assert.equal(g.status, 200);
-    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+    // 入群递的是**票**，不是群码 —— 群码只是这个群的地址（设计文档 §3.1）
+    const ticket = await liveTicket(g.body.code, owner.token);
+    await raw(`/api/groups/${ticket}/join`, { method: 'POST', token: mate.token, body: {} });
 
     const a = await started(base, { token: owner.token });
     assert.equal(a.activeScreen(), 'home');
@@ -892,7 +902,9 @@ test('首页群组列表 -> 群组页 -> 比对页，一路点得通', async () 
     a.click(items[0]);
     await tick(400);
     assert.equal(a.activeScreen(), 'group');
-    assert.equal(a.el('#group-code').textContent, g.body.code);
+    // 卡片上印的是**一枚能用的票**，不再是群码 —— 群码进不了群，印出来等于教人复制一条死链
+    assert.equal(a.el('#group-code').textContent, ticket, '邀请卡片上应当是那枚能用的票');
+    assert.notEqual(a.el('#group-code').textContent, g.body.code, '群码只是地址，不是票');
     assert.equal(a.el('#group-name').firstChild.nodeValue, '扫描群');
 
     // 成员行渲染出来了，且带 data-member（可点进比对）
@@ -949,7 +961,9 @@ test('移除成员：确认按钮要按两次才真的移除', async () => {
     const owner = await user();
     const mate = await user();
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '要移除的群' } });
-    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
 
     const a = await started(base, { token: owner.token });
     a.click(a.all('#home-groups .item')[0]);
@@ -1176,7 +1190,9 @@ test('群组页：群主看不到「退群」，成员看得到；解散只有�
     const owner = await user();
     const mate = await user();
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '退群可见性' } });
-    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
 
     const a1 = await started(base, { token: owner.token });
     a1.click(a1.all('#home-groups .item')[0]);
@@ -1216,7 +1232,9 @@ test('转让群主：按钮只在「群主且群里有别人」时出现', async
 
     // 来了一个人：出现
     const mate = await user();
-    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
     const a2 = await started(base, { token: owner.token });
     a2.click(a2.all('#home-groups .item')[0]);
     await tick(350);
@@ -1233,7 +1251,9 @@ test('转让群主：选人 -> 输密码 -> 界面立刻变成普通成员', asy
     const owner = await user();
     const mate = await user();
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '转让流程群' } });
-    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
 
     const a = await started(base, { token: owner.token });
     a.click(a.all('#home-groups .item')[0]);
@@ -1258,7 +1278,10 @@ test('转让群主：选人 -> 输密码 -> 界面立刻变成普通成员', asy
     const input = pwBox.querySelector('input');
     assert.equal(input.type, 'password', '这一步要的是密码');
     assert.match(pwBox.textContent, /会变成普通成员/, '要说清权限会没');
-    assert.match(pwBox.textContent, /永久码/, '要说清永久码易主');
+    // 「你那条永久码会变成 TA 的」随群码改制删掉了：现在没有「群主自己的永久码」，
+    // 链接属于群、不属于谁当群主，换了人照旧有效 —— 交接时该说的是「你收不回它们了」
+    assert.match(pwBox.textContent, /不能再收回/, '要说清链接的去留');
+    assert.equal(/永久码/.test(pwBox.textContent), false, '不该再提已经不存在的东西');
     input.value = 'pw123456';
     a.click(pwBox.querySelector('[data-x="ok"]'));
     await tick(400);
@@ -1280,7 +1303,9 @@ test('转让群主：选人框取消 / 密码框取消，都不发请求', async
     const owner = await user();
     const mate = await user();
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '转让取消群' } });
-    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token, body: {} });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
 
     const a = await started(base, { token: owner.token });
     a.click(a.all('#home-groups .item')[0]);
@@ -1383,9 +1408,11 @@ test('邀请链接管理页：能进、能看到列表、非群主进不去', as
     assert.equal(a.activeScreen(), 'invites');
     assert.equal(a.title(), '邀请链接');
 
-    // 两条都渲染出来，且都带勾选框（只列有效的，才能多选管理）
-    assert.equal(a.all('#inv-active-list .item').length, 2, '两条有效链接都应列出');
-    assert.equal(a.all('#inv-active-list [data-pick]').length, 2, '每条都该有勾选框');
+    // 三条都渲染出来，且都带勾选框（只列有效的，才能多选管理）。
+    // 是三条不是两条：建群时就自带一枚「默认链接」（设计文档 §3.2），
+    // 它就是列表里的一行，和手动发的那两枚没有区别
+    assert.equal(a.all('#inv-active-list .item').length, 3, '默认链接 + 手动发的两条，三条都应列出');
+    assert.equal(a.all('#inv-active-list [data-pick]').length, 3, '每条都该有勾选框');
     // 永久那条显示「永久有效」，1 天那条显示剩余时间
     const texts = a.all('#inv-active-list .sub').map((x) => x.textContent).join(' | ');
     assert.match(texts, /永久有效/);
@@ -1399,9 +1426,9 @@ test('邀请链接管理页：能进、能看到列表、非群主进不去', as
     box.dispatch('change', {});
     assert.match(a.el('#btn-inv-revoke-selected').textContent, /1 条/);
 
-    // 全选 -> 两条都勾上
+    // 全选 -> 三条都勾上
     a.click('#btn-inv-selectall');
-    assert.equal(a.all('#inv-active-list [data-pick]').filter((p) => p.checked).length, 2);
+    assert.equal(a.all('#inv-active-list [data-pick]').filter((p) => p.checked).length, 3);
     // 再点一次 = 取消全选
     a.click('#btn-inv-selectall');
     assert.equal(a.all('#inv-active-list [data-pick]').filter((p) => p.checked).length, 0);
@@ -1411,7 +1438,9 @@ test('邀请链接管理页：成员没有入口，也拿不到管理页', async
     const owner = await user(true);
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '成员不许管' } });
     const mate = await user(true);
-    await raw(`/api/groups/${g.body.code}/join`, { method: 'POST', token: mate.token });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token
+    });
 
     const a = await started(base, { token: mate.token });
     a.click(a.all('#home-groups .item')[0]);
@@ -1504,10 +1533,17 @@ test('邀请链接：进群之后地址栏里的码要擦掉，别每次加载�
     const owner = await user();
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '擦码群' } });
     const code = g.body.code;
+    // 地址栏里那个 code 是**票**：群码从今天起入不了群（设计文档 §3.1）
+    const ticket = await liveTicket(code, owner.token);
     const mate = await user();
 
+    // 先确证群码不是票：地址栏里挂着群码（或者同学手上只有群码）是进不来的
+    assert.equal((await raw(`/api/groups/${code}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    })).status, 404, '群码只是地址，入群只认票');
+
     // 带着同学发来的链接进来（后面还缀着别人的参数）
-    const a = await started(base, { token: mate.token, search: `?code=${code}&from=wechat` });
+    const a = await started(base, { token: mate.token, search: `?code=${ticket}&from=wechat` });
     await tick(350);
 
     assert.equal((await raw(`/api/groups/${code}`, { token: mate.token })).status, 200, '应当已经进群');
@@ -1522,10 +1558,12 @@ test('邀请链接：还没登录时码不能丢，登录之后才擦', async ()
     const owner = await user();
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '登录后进群' } });
     const code = g.body.code;
+    // 链接里带的同样是票，不是群码（群码只是地址）
+    const ticket = await liveTicket(code, owner.token);
     const mate = await user();       // 已经注册好了，只是这次先不登录
 
     // 没令牌 + 带码进来：停在登录页
-    const a = await started(base, { search: `?code=${code}` });
+    const a = await started(base, { search: `?code=${ticket}` });
     await tick(250);
     assert.equal(a.activeScreen(), 'auth');
     assert.equal(a.history.lastUrl, null,
@@ -1578,18 +1616,25 @@ test('成员分享开关：关掉后成员侧看不到码，首页那张卡片�
     const mate = await user();
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '分享开关群' } });
     const code = g.body.code;
-    await raw(`/api/groups/${code}/join`, { method: 'POST', token: mate.token, body: {} });
+    await raw(`/api/groups/${await liveTicket(code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
     // 群主发一枚邀请码：成员侧那张卡片得先有东西可展示，
     // 才有「关掉之后变成什么」可言（成员看不到码时卡片本来就是空的）
     await raw(`/api/groups/${code}/invites`, { method: 'POST', token: owner.token, body: { ttl: 'never' } });
+    // 首页/群组页该印的码 = 最新一枚还能用的票。群码不是票，两处都不该出现它
+    const shown = await liveTicket(code, owner.token);
 
     // 默认（开关没动过）：成员在首页和群组页都看得到码 —— 这是上线前的行为，不该改
     const a1 = await started(base, { token: mate.token });
-    assert.match(a1.all('#home-groups .item')[0].textContent, new RegExp(code), '默认成员看得到邀请码');
+    assert.match(a1.all('#home-groups .item')[0].textContent, new RegExp(shown), '默认成员看得到那枚能用的票');
+    assert.equal(a1.all('#home-groups .item')[0].textContent.includes(code), false,
+        '首页印的是票，不是群码 —— 群码只是地址');
     a1.click(a1.all('#home-groups .item')[0]);
     await tick(350);
     assert.equal(a1.el('#invite-share-box').hidden, false, '默认展示的是码那一块');
     assert.equal(a1.el('#invite-closed').hidden, true);
+    assert.equal(a1.el('#invite-empty').hidden, true, '有票时不该出现空态');
     assert.equal(a1.el('#btn-copy-code').disabled, false, '默认分享按钮可用');
 
     // 群主关掉
@@ -1604,11 +1649,13 @@ test('成员分享开关：关掉后成员侧看不到码，首页那张卡片�
     assert.equal(a2.el('#invite-share-box').hidden, true, '成员不该再看到码 / 二维码 / 按钮');
     assert.equal(a2.el('#invite-closed').hidden, false, '要换成那条说明');
     assert.match(a2.el('#invite-closed').textContent, /群主/, '说明里要讲清楚该找谁');
+    assert.equal(a2.el('#invite-empty').hidden, true, '分享被关掉走的是「分享关了」那块，不是「没票」那块');
     assert.equal(a2.el('#btn-copy-code').disabled, true, '按钮即使露出来也点不出一个能用的链接');
 
     // 首页那张卡片：不再印码，但**还得能点进去**
     const card = a2.all('#home-groups .item')[0];
-    assert.equal(card.textContent.includes(code), false, '首页不能一边说只有群主能分享、一边把码印出来');
+    assert.equal(card.textContent.includes(shown), false, '首页不能一边说只有群主能分享、一边把票印出来');
+    assert.equal(card.textContent.includes(code), false, '群码本来就没资格当邀请码印在卡片上');
     assert.match(card.textContent, /2 人/, '人数照旧显示');
     assert.equal(card.getAttribute('data-code'), code, 'data-code 必须留着，否则首页点不开群了');
 
@@ -1617,7 +1664,7 @@ test('成员分享开关：关掉后成员侧看不到码，首页那张卡片�
     a3.click(a3.all('#home-groups .item')[0]);
     await tick(350);
     assert.equal(a3.el('#invite-share-box').hidden, false, '群主照旧看得到自己的码');
-    assert.match(a3.all('#home-groups .item')[0].textContent, new RegExp(code), '群主首页照旧印码');
+    assert.match(a3.all('#home-groups .item')[0].textContent, new RegExp(shown), '群主首页照旧印那枚票');
 });
 
 test('成员分享开关：群主点一下就能切，两侧立刻跟着变', async () => {
@@ -1625,7 +1672,9 @@ test('成员分享开关：群主点一下就能切，两侧立刻跟着变', as
     const mate = await user();
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '开关即时群' } });
     const code = g.body.code;
-    await raw(`/api/groups/${code}/join`, { method: 'POST', token: mate.token, body: {} });
+    // 建群自带的那枚「默认链接」就是成员手上能转发的东西（入群也只认它）
+    const ticket = await liveTicket(code, owner.token);
+    await raw(`/api/groups/${ticket}/join`, { method: 'POST', token: mate.token, body: {} });
 
     const a = await started(base, { token: owner.token });
     a.click(a.all('#home-groups .item')[0]);
@@ -1642,9 +1691,11 @@ test('成员分享开关：群主点一下就能切，两侧立刻跟着变', as
     assert.equal((await raw(`/api/groups/${code}`, { token: owner.token })).body.memberShare, false,
         '服务端真的关掉了');
 
-    // 成员那边重新进来就是关闭态
+    // 成员那边重新进来就是关闭态。
+    // 印在首页上的是那枚票（ticket），不是群码 —— 群码从来就不该出现在卡片上，
+    // 拿它来断言只会让这一条永远成立，等于白测
     const b = await started(base, { token: mate.token });
-    assert.equal(b.all('#home-groups .item')[0].textContent.includes(code), false, '成员首页也不印码了');
+    assert.equal(b.all('#home-groups .item')[0].textContent.includes(ticket), false, '成员首页也不印码了');
     b.click(b.all('#home-groups .item')[0]);
     await tick(350);
     assert.equal(b.el('#invite-closed').hidden, false);
@@ -1654,10 +1705,72 @@ test('成员分享开关：群主点一下就能切，两侧立刻跟着变', as
         method: 'PUT', token: owner.token, body: { memberShare: true }
     });
     const c = await started(base, { token: mate.token });
+    assert.match(c.all('#home-groups .item')[0].textContent, new RegExp(ticket),
+        '打开之后首页又印得出那枚票');
     c.click(c.all('#home-groups .item')[0]);
     await tick(350);
     assert.equal(c.el('#invite-closed').hidden, true, '打开之后说明该收起');
     assert.equal(c.el('#invite-share-box').hidden, false, '码那一块回来');
+    assert.equal(c.el('#invite-empty').hidden, true, '有票时不该出现空态');
+});
+
+// ---------------------------------------------------------------- 一枚票都没有
+
+test('邀请链接被收光之后：群主看到出口，成员看到「找群主要」', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '收光链接群' } });
+    const code = g.body.code;
+    // 入群用票；建群自带的那枚「默认链接」就是第一枚
+    const ticket = await liveTicket(code, owner.token);
+    assert.equal((await raw(`/api/groups/${ticket}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    })).status, 200, '先让成员用默认链接进来');
+
+    // 群主把票全收回去（连建群自带的那枚也作废）—— 群里从此一枚能用的都没有。
+    // 这就是以前那张坏卡片出现的场景：群主以前有自己的永久码兜底，成员没有
+    assert.equal((await raw(`/api/groups/${code}/invites/${ticket}`, {
+        method: 'DELETE', token: owner.token, body: {}
+    })).status, 200, '作废那枚默认链接');
+
+    // 成员：不再是「——」+ 空二维码 + 三颗灰按钮，而是换成一段说明。
+    // 文案是 app.js 写进 <p> 的 innerHTML 的（垫片只在元素内部保留文字节点，
+    // 所以要判「到底写了哪句话」得读 innerHTML —— 那就是真正进 DOM 的那份字符串）
+    const a = await started(base, { token: mate.token });
+    a.click(a.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(a.el('#invite-share-box').hidden, true, '没票时码那一块整体收起');
+    assert.equal(a.el('#invite-empty').hidden, false, '换成空态说明');
+    assert.match(a.el('#invite-empty-text').innerHTML, /群主似乎没有分享他的群群/, '成员要被告知去找谁');
+    assert.equal(a.el('#btn-invite-create').hidden, true, '成员无权发新票，别给一颗点了必然报错的按钮');
+    assert.equal(a.el('#btn-copy-code').disabled, true, '复制码按钮禁用');
+    assert.equal(a.el('#btn-copy-link').disabled, true, '复制链接按钮禁用');
+    assert.equal(a.el('#btn-zoom-qr').disabled, true, '放大二维码按钮禁用');
+    assert.equal(a.el('#group-qr').innerHTML, '', '不该再摆一张空二维码');
+
+    // 首页那张卡片：不印码，但**还得能点进去**
+    const card = a.all('#home-groups .item')[0];
+    assert.equal(card.textContent.includes(ticket), false, '没有能用的票就不该印码');
+    assert.equal(card.getAttribute('data-code'), code, 'data-code 必须留着，否则首页点不开群了');
+
+    // 群主：同样是空态，但给的是出口，不是死胡同
+    const b = await started(base, { token: owner.token });
+    b.click(b.all('#home-groups .item')[0]);
+    await tick(350);
+    assert.equal(b.el('#invite-empty').hidden, false);
+    assert.match(b.el('#invite-empty-text').innerHTML, /这个群现在没有任何分享链接/, '群主要知道「谁也进不来」');
+    assert.equal(b.el('#btn-invite-create').hidden, false, '群主要有那颗一键生成的按钮');
+    assert.equal(b.el('#btn-invite-create').textContent, '生成一条邀请链接');
+
+    // 点一下：真的发出一条新链接，卡片切回码那一块
+    b.click('#btn-invite-create');
+    await tick(400);
+    const fresh = await liveTicket(code, owner.token);
+    assert.notEqual(fresh, ticket, '新票不该和作废的那枚同码');
+    assert.equal(b.el('#invite-empty').hidden, true, '生成之后空态收起');
+    assert.equal(b.el('#invite-share-box').hidden, false, '卡片切回码那一块');
+    assert.equal(b.el('#group-code').textContent, fresh, '展示的就是刚生成的那枚票');
+    assert.equal(b.el('#btn-copy-code').disabled, false, '有新票了，按钮跟着可用');
 });
 
 // ---------------------------------------------------------------- 管理页筛选
@@ -1735,12 +1848,20 @@ function listedNames(a) {
     return a.all('#admin-users .item').map((r) => r.querySelector('.title').textContent);
 }
 
-/** 用某个 token 起一份 app 并进管理页。等 600ms：概览那六个数字要滚 420ms 才停 */
+/**
+ * 用某个 token 起一份 app 并进管理页。
+ *
+ * 等的是**条件**，不是死时间。原来写死 `tick(600)`（为了等概览那六个数字滚完 420ms），
+ * 并行跑整套测试时 CPU 一挤，600ms 就可能不够，账号列表还没画出来就去断言了 ——
+ * 这条路径上的两条筛选用例因此偶发变红（是用例自己的精度问题，不是产品问题）。
+ * 先等到列表真的画出来，再留一点时间给数字滚完。
+ */
 async function openAdminAt(url, token) {
     const a = await started(url, { token });
     a.click('#btn-admin');
-    await tick(600);
-    assert.equal(a.activeScreen(), 'admin');
+    const ready = await until(() => a.activeScreen() === 'admin' && a.all('#admin-users .item').length > 0);
+    assert.ok(ready, '管理页应当把账号列表画出来');
+    await tick(500);
     return a;
 }
 

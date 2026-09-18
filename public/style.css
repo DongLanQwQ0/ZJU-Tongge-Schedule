@@ -493,10 +493,12 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 .invite .qr { display: inline-block; padding: 10px; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
 .invite .qr svg, .invite .qr img { display: block; width: 168px; height: 168px; }
 
-/* 群主关掉「成员分享」之后，成员看到的那块说明。调子照内测提示那种口气写 */
-.invite-closed { padding: 6px 4px 2px; }
-.invite-closed .closed-emoji { font-size: 32px; line-height: 1; margin-bottom: 8px; }
-.invite-closed p { font-size: 12px; line-height: 1.7; color: var(--text-2); }
+/* 邀请卡片上「没码可分享」时的说明块：两种情形共用 ——
+   群主关掉了成员分享（成员看），以及一枚能用的票都没有（两种角色各一套文案）。
+   调子照内测提示那种口气写 */
+.invite-note { padding: 6px 4px 2px; }
+.invite-note .closed-emoji { font-size: 32px; line-height: 1; margin-bottom: 8px; }
+.invite-note p { font-size: 12px; line-height: 1.7; color: var(--text-2); }
 
 /* ------------------------------------------------------------ 模态 */
 

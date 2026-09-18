@@ -473,6 +473,9 @@ function createStore(dataDir, options) {
         if (rekeyed) {
             console.log(`[store] 会话键已升级为 ${SESSION_KEY_ALGO}：${rekeyed} 条（用户无需重新登录）`);
         }
+        // 老群补「默认链接」。放在启动时做，而不是读路径上顺手写：
+        // 读接口不该有副作用，而且这样它会留下一行日志（谁改了什么，要说得清）
+        await seedLegacyInvites();
     }
 
     async function readCachedSessions() {
@@ -867,64 +870,25 @@ function createStore(dataDir, options) {
         return readJson(file, () => null);
     }
 
-    /**
-     * 换一个新的 8 位邀请码，旧的当场作废。
-     *
-     * 与「作废某一枚邀请链接」不同：这是换掉**群自己的码**，
-     * 也就是「以前发出去的所有旧链接一起失效」。用途是把改版前那批
-     * 6 位老码清掉 —— 10⁶ 空间配 20 次/分钟的限流，枚举完只要一个多月。
-     *
-     * 关键点：**只改 g.code，不动文件名**。
-     * 文件名是内部存储键；改了它就要 rename，而 rename 跨崩溃不原子，
-     * 一旦失败群就丢了。groupDetail 会按 code 字段找群，所以换码后一切照常。
-     *
-     * 成员完全不受影响（按 userId 记的），受影响的只有旧链接。
-     */
-    async function rotateGroupCode(code, actorId, meta) {
-        const c = validateCode(code);
-        const info = meta || {};
-        await fsp.mkdir(GROUPS, { recursive: true });
-        const files = await fsp.readdir(GROUPS);
+    // 这里原本有一个 rotateGroupCode()：「换群码」，本意是一键作废所有旧链接。
+    // 群码不再是票之后（§3.1）它什么也收不回来，却会改掉群的地址
+    // —— 前端手上那个 code 立刻全部 404。一个只剩破坏性的动作不值得留着，
+    // 要收回链接请直接作废那张票。设计文档 §3.4。
+    // （老数据里的 codeRotatedFrom* 字段保留：resolveGroupFile 还要靠它读回老群。）
 
-        for (const f of files) {
-            if (!/^\d{6,8}\.json$/.test(f)) continue;
-            const file = path.join(GROUPS, f);
-            const result = await withLock(`group:${c}`, async () => {
-                const g = await readJson(file, () => null);
-                if (!g || g.code !== c) return null;
-                // 只有群主本人或管理员能换
-                if (!info.asAdmin && g.creatorId !== actorId) {
-                    throw fail(403, '只有群主能换邀请码');
-                }
-                let next = auth.newGroupCode();
-                for (let i = 0; i < 10 && next === c; i++) next = auth.newGroupCode();
-
-                g.code = next;
-                g.codeRotatedAt = now();
-                // 记下所有换掉的旧码（含文件名用的那个）。joinByInvite 靠它把旧码挡住 ——
-                // 只记 g.code 字段是不够的，因为群文件的**文件名**仍是旧码，
-                // 不挡的话「拿旧码来读文件」这条路径会让旧码悄悄复活。
-                const retired = Array.isArray(g.codeRotatedFromList) ? g.codeRotatedFromList.slice() : [];
-                if (g.codeRotatedFrom && !retired.includes(g.codeRotatedFrom)) retired.push(g.codeRotatedFrom);
-                if (!retired.includes(c)) retired.push(c);
-                g.codeRotatedFromList = retired;
-                g.codeRotatedFrom = c;
-                g.updatedAt = now();
-                await writeJsonAtomic(file, g);
-                return { code: next, oldCode: c };
-            });
-            if (result) return result;
-        }
-        throw fail(404, '群组不存在或已解散');
-    }
 
     async function createGroup(creatorId, name) {
         const groupName = sanitizeGroupName(name);
+        // 群码也要避开已有的票码：两者共用同一片数字空间，撞上了
+        // 「拿票来入群」和「拿群码来入群」在日志里会长得一模一样
+        const used = await usedCodes();
         for (let attempt = 0; attempt < 10; attempt++) {
             const code = auth.newGroupCode();
+            if (used.has(code)) continue;                  // 撞码，换一个
             const created = await withLock(`group:${code}`, async () => {
                 const existing = await readJson(groupFile(code), () => null);
                 if (existing) return null;                 // 撞码，换一个
+                used.add(code);
                 const g = {
                     v: 2,
                     code,
@@ -935,7 +899,13 @@ function createStore(dataDir, options) {
                     createdAt: now(),
                     updatedAt: now(),
                     members: [{ userId: creatorId, joinedAt: now() }],
-                    requests: []
+                    requests: [],
+                    // 建群就带一条永久链接。群码只是地址、不是票（见 §3.1），
+                    // 没有这枚票的话，成员打开群组页看到的是一张空卡片 ——
+                    // 而且群主不发，成员就永远没有东西可分享
+                    invites: [inviteRecord(uniqueCode(used), creatorId, 'never', DEFAULT_INVITE_LABEL)],
+                    // 「默认链接补过没有」是个事实，不能靠 invites 空不空来猜（§3.3）
+                    invitesSeeded: true
                 };
                 await writeJsonAtomic(groupFile(code), g);
                 return g;
@@ -951,13 +921,20 @@ function createStore(dataDir, options) {
      * 邀请链接与「群」的关系，是本功能的核心约定，先讲清楚：
      *
      *   g.code      —— 群的**永久地址**，也是文件名。永远有效，永远不变。
-     *                  群主自己用它是为了「回到自己的群」，不当作对外分享的凭证。
-     *   g.invites[] —— 对外发出去的**邀请链接**，可以同时存在很多枚，
+     *                  **它不是票**：拿它来入群一律 404（见 joinByInvite）。
+     *                  它出现在每个成员都拿得到的响应里（前端要拿它寻址），
+     *                  正因为不再是凭证，泄漏它才没有后果。
+     *   g.invites[] —— 入群**唯一**的凭证。可以同时存在很多枚，
      *                  每枚各自带有效期（null = 永久），随时可以单独作废。
      *
      * 为什么不把有效期加在 g.code 上：那样「过期」就等于这个群没了地址，
      * 而群本身不该有寿命 —— 你问得对，群为什么要有有效期。
      * 有寿命的只是发给别人的那张票。
+     *
+     * 为什么群码曾经**同时**是票（改版前发出去的链接用的就是它）：那是为了让
+     * 老链接不失效。代价是它不可收回、不可过期 —— 谁拿到都能进，群主想收回
+     * 只能换群码，而换群码会改掉群的地址。这次把这个「身兼两职」拆了：
+     * 见 docs/superpowers/specs/2026-09-18-group-code-not-a-ticket-design.md。
      *
      * 过期只挡**新人入群**：已经在群里的人完全不受影响
      * （成员按 userId 记，跟票无关）。
@@ -966,12 +943,49 @@ function createStore(dataDir, options) {
     /** 允许的有效期档位；null = 永久。前端传什么都在这里收敛 */
     const INVITE_TTL_OPTIONS = INVITE_TTLS;
     const MAX_INVITES = MAX_INVITES_PER_GROUP;
+    /** 建群/补老群时那枚默认票的备注名 */
+    const DEFAULT_INVITE_LABEL = '默认链接';
 
     function resolveInviteExpiry(ttl) {
         const key = String(ttl == null || ttl === '' ? 'never' : ttl);
         if (!(key in INVITE_TTL_OPTIONS)) throw fail(400, '有效期只能是 1d / 3d / 7d / 30d / never');
         const ms = INVITE_TTL_OPTIONS[key];
         return ms == null ? null : now() + ms;
+    }
+
+    /**
+     * 全仓库已经用掉的码：每个群的 code + **所有历史票码**（含作废/过期的）。
+     *
+     * 为什么票码要跟群码放同一个集合：票现在是唯一的入口，而 joinByInvite 是
+     * 「扫目录、谁先撞上算谁」。跨群重码的结果是**静默进错群**，从现象上完全
+     * 看不出原因。10⁸ 的空间里撞一次概率极低，但这个错的代价远大于扫一遍目录，
+     * 所以这里买一个确定性。
+     *
+     * 查重范围包含作废/过期的老票：它们被重新发出来就等于「拿到旧链接的人
+     * 莫名其妙又获得了入口」，那是这个功能最不该出的错。
+     */
+    async function usedCodes() {
+        const used = new Set();
+        await fsp.mkdir(GROUPS, { recursive: true });
+        for (const f of await fsp.readdir(GROUPS)) {
+            if (!/^\d{6,8}\.json$/.test(f)) continue;
+            const g = await readJson(path.join(GROUPS, f), () => null);
+            if (!g) continue;
+            if (g.code) used.add(g.code);
+            if (Array.isArray(g.invites)) {
+                g.invites.forEach((i) => { if (i && i.code) used.add(i.code); });
+            }
+        }
+        return used;
+    }
+
+    /** 造一枚不在 used 里的码；连着撞 10 次就当生成失败（10⁻⁷² 级别的意外） */
+    function uniqueCode(used) {
+        let code = auth.newGroupCode();
+        for (let i = 0; i < 10 && used.has(code); i++) code = auth.newGroupCode();
+        if (used.has(code)) throw fail(500, '邀请码生成失败，请重试');
+        used.add(code);
+        return code;
     }
 
     /** 这枚票还能用吗（永久票永远能用）；作废过的永远不能用 */
@@ -1008,13 +1022,7 @@ function createStore(dataDir, options) {
         return g.invites;
     }
 
-    /** 这个码是不是这个群的邀请码（含群主自己的永久码） */
-    function codeBelongsTo(g, code) {
-        if (g.code === code) return true;
-        return invitesOf(g).some((i) => i.code === code);
-    }
-
-    /** 群主的永久码不当作邀请票；这里列出需要校验有效期的那些票 */
+    /** 这个码对应的票（群码不是票，所以这里查不到它） */
     function findInvite(g, code) {
         return invitesOf(g).find((i) => i.code === code) || null;
     }
@@ -1027,7 +1035,10 @@ function createStore(dataDir, options) {
         const c = validateCode(groupCode);
         const target = String(inviteCode || '').trim();
         const options = opts || {};
-        if (c === target) throw fail(400, '不能作废群主自己的永久码');
+        // 群码不再是票，也就没有「群主自己的永久码」这回事（§3.1）。
+        // 留着这一句是为了把「拿群码当票传进来」和「传了一枚不存在的票码」分开说清楚：
+        // 前者多半是前端状态串了，后者才是过期/被人删掉的老票
+        if (c === target) throw fail(400, '这是群码，不是邀请链接 —— 群码已经不能用来入群了');
 
         return withLock(`group:${c}`, async () => {
             const file = await resolveGroupFile(c);
@@ -1044,7 +1055,7 @@ function createStore(dataDir, options) {
             // 顺手发一枚新的（可选），这样「作废并重发」是一次操作
             let issued = null;
             if (options.issueNew) {
-                issued = newInviteRecord(g, ownerId, options.ttl, options.label);
+                issued = inviteRecord(uniqueCode(await usedCodes()), ownerId, options.ttl, options.label);
                 invitesOf(g).push(issued);
             }
             g.updatedAt = now();
@@ -1063,7 +1074,8 @@ function createStore(dataDir, options) {
     async function purgeInvite(groupCode, ownerId, inviteCode) {
         const c = validateCode(groupCode);
         const target = String(inviteCode || '').trim();
-        if (c === target) throw fail(400, '群主自己的永久码不能删');
+        // 同 revokeInvite 里那句：群码不是票，这里只是把两种情况分开说清楚
+        if (c === target) throw fail(400, '这是群码，不是邀请链接 —— 群码已经不能用来入群了');
 
         return withLock(`group:${c}`, async () => {
             const file = await resolveGroupFile(c);
@@ -1118,15 +1130,17 @@ function createStore(dataDir, options) {
     }
 
     /**
-     * 造一枚新票，但先不落盘（调用方在锁内拼好再写）
+     * 造一枚新票，但先不落盘（调用方在锁内拼好再写）。
+     *
+     * 码由调用方给：唯一性要看**全仓库**（usedCodes），这里看不到那么远。
      */
-    function newInviteRecord(g, ownerId, ttl, label) {
+    function inviteRecord(code, ownerId, ttl, label) {
         const clean = String(label == null ? '' : label)
             .replace(/[\u0000-\u001f\u007f]/g, '')
             .trim()
             .slice(0, MAX_INVITE_LABEL);
         return {
-            code: auth.newGroupCode(),
+            code,
             label: clean,
             createdAt: now(),
             createdBy: ownerId,
@@ -1155,17 +1169,9 @@ function createStore(dataDir, options) {
                 throw fail(400, `同时最多 ${MAX_INVITES} 个有效的邀请码，先作废几个再发`);
             }
 
-            const inv = newInviteRecord(g, ownerId, ttl, label);
-            // 撞码就重来。注意这里查的是**全部历史**，不只是还能用的那些 ——
-            // 作废/过期的码是留档给人查的，但它们仍然是「曾经发出去过的码」，
-            // 一旦被重新发出来，拿到旧链接的人就会莫名其妙地重新获得入口。
-            // 作废码被复活是这个功能最不该出的错。
-            for (let i = 0; i < 10 && g.invites.some((x) => x.code === inv.code); i++) {
-                inv.code = auth.newGroupCode();
-            }
-            if (g.invites.some((x) => x.code === inv.code)) {
-                throw fail(500, '邀请码生成失败，请重试');
-            }
+            // 撞码就重来 —— 这里的「撞」是**全仓库**范围的：别的群的票、
+            // 别的群的群码都算。见 usedCodes() 的说明
+            const inv = inviteRecord(uniqueCode(await usedCodes()), ownerId, ttl, label);
             invitesOf(g).push(inv);
             g.updatedAt = at;
             await writeJsonAtomic(file, g);
@@ -1192,8 +1198,8 @@ function createStore(dataDir, options) {
      * 入群。
      * 开放模式直接进；审批模式只登记一条申请，等群主同意。
      *
-     * `code` 既可能是群主自己的永久码，也可能是某一枚有时效的邀请码 ——
-     * 两种都得认，因为改版前的链接用的就是群码，不能让老链接失效。
+     * 只接受**群码**（群的身份）。票的解析在 joinByInvite 里 —— 它是唯一
+     * 会拿「别人递给你的那串数字」来调这个函数的地方。
      * @returns {{group:object, pending:boolean}}
      */
     async function joinGroup(code, userId) {
@@ -1246,7 +1252,9 @@ function createStore(dataDir, options) {
         const at = now();
 
         await fsp.mkdir(GROUPS, { recursive: true });
-        const files = await fsp.readdir(GROUPS);
+        // 排序只是为了确定性：万一日后撞了一枚重码（见 usedCodes），
+        // 「谁先撞上算谁」至少每次都是同一个答案，而不是看目录返回顺序
+        const files = (await fsp.readdir(GROUPS)).sort();
 
         for (const f of files) {
             if (!/^\d{6,8}\.json$/.test(f)) continue;
@@ -1264,16 +1272,54 @@ function createStore(dataDir, options) {
             return joinGroup(g.code, userId);
         }
 
-        // 也认群主自己的永久码 —— 改版前发出去的链接用的就是它，不能让它失效。
-        // resolveGroupFile 默认不认「换码时被换掉的那批」，所以换过码的群
-        // 拿旧码来会直接扑空 —— 这正是我们要的：换码必须真的作废旧码。
-        const file = await resolveGroupFile(c);
-        if (file) {
-            const g = await readJson(file, () => null);
-            if (g && Array.isArray(g.members)) return joinGroup(g.code, userId);
-        }
-
+        // 群码**不是**票（§3.1）。这里曾经有一段「也认群主自己的永久码」，
+        // 那是为了让改版前的链接继续能用；代价是群里挂着一张不可收回、不可过期的
+        // 永久门票，而且它出现在每个成员都拿得到的响应里。
+        // 现在它只是一段地址：拿它来入群，跟拿一段乱码来，是同一种结果。
         throw fail(404, '邀请链接无效，确认一下是不是复制少了数字');
+    }
+
+    /**
+     * 老群补齐「默认链接」。
+     *
+     * 群码不再能入群之后，一枚票都没有的群就是「谁也进不来」；
+     * 建群时已经自带一枚，老群在这里补一次。
+     *
+     * 判据是 `invitesSeeded` 而不是「invites 空不空」：群主**故意**把票收光之后，
+     * 界面该显示「群主似乎没有分享他的群群~」，而不是下次启动时被我们偷偷补回去。
+     * 只有「这个群还没经过这一步」才补 —— 那是个事实，不是猜出来的。
+     *
+     * 补的时候**不动 updatedAt**：这不是用户做的事，改了会让首页排序和
+     * 180 天清理的口径跟着漂。
+     */
+    async function seedLegacyInvites() {
+        await fsp.mkdir(GROUPS, { recursive: true });
+        let seeded = 0;
+        for (const f of await fsp.readdir(GROUPS)) {
+            if (!/^\d{6,8}\.json$/.test(f)) continue;
+            const p = path.join(GROUPS, f);
+            const probe = await readJson(p, () => null);
+            if (!probe || probe.invitesSeeded === true) continue;
+
+            await withLock(`group:${probe.code || f.replace('.json', '')}`, async () => {
+                const g = await readJson(p, () => null);          // 锁内重读，别用锁外那份
+                if (!g || g.invitesSeeded === true) return;
+                // 已经有票的群（老群但用过这个功能）只打标记，不塞新票 ——
+                // 塞了就等于把群主「上次故意收回」的决定撤销掉
+                if (invitesOf(g).length === 0) {
+                    const used = await usedCodes();
+                    used.add(g.code);
+                    invitesOf(g).push(inviteRecord(uniqueCode(used), g.creatorId, 'never', DEFAULT_INVITE_LABEL));
+                    seeded++;
+                }
+                g.invitesSeeded = true;
+                await writeJsonAtomic(p, g);
+            });
+        }
+        if (seeded) {
+            console.log(`[store] 已给 ${seeded} 个老群补了默认链接（群码从今天起不能入群）`);
+        }
+        return seeded;
     }
 
     /** 这个码是不是被「换群码」换掉的旧码 */
@@ -1583,8 +1629,8 @@ function createStore(dataDir, options) {
                 : (settings.memberShare ? invites.filter((i) => inviteActive(i, at)) : []))
                 .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
                 .map((i) => publicInvite(i, at)),
-            // 群主自己的永久码，不当作邀请票，但界面要能显示出来
-            ownerCode: g.creatorId === viewerId ? g.code : null,
+            // 没有 ownerCode 了：群码不再是票（§3.1），所以没有「群主自己的永久码」
+            // 这种东西。界面上要展示的码一律从 invites 里挑 —— 对群主和成员是同一套规则
             // 申请名单只给群主看
             requests: g.creatorId === viewerId
                 ? (Array.isArray(g.requests) ? g.requests : [])
@@ -1611,13 +1657,25 @@ function createStore(dataDir, options) {
             const isPending = !isMember &&
                 Array.isArray(g.requests) && g.requests.some((r) => r.userId === userId);
             if (!isMember && !isPending) continue;
+            const settings = groupSettings(g);
+            // 首页那张卡片该印哪一枚码：能用的票里最新的一枚。
+            // 群码不能印 —— 它不是票，印出来等于告诉人去复制一段印不出去的链接
+            // （群组页那套规则也在这里落地：成员分享关掉时，成员这儿也是 null）
+            const at = now();
+            const share = (isMember && (g.creatorId === userId || settings.memberShare))
+                ? invitesOf(g)
+                    .filter((i) => inviteActive(i, at))
+                    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]
+                : null;
             out.push({
                 code: g.code,
                 name: g.name,
                 memberCount: g.members.length,
                 isCreator: g.creatorId === userId,
                 // 成员分享被关掉时，首页那张卡片也不该印邀请码（见成员分享开关的设计）
-                memberShare: groupSettings(g).memberShare,
+                memberShare: settings.memberShare,
+                // 印在卡片上的那一枚（没得印就是 null）
+                shareCode: share ? share.code : null,
                 pending: isPending,
                 updatedAt: g.updatedAt
             });
@@ -1878,7 +1936,6 @@ function createStore(dataDir, options) {
         // 群组
         readGroup,
         createGroup,
-        rotateGroupCode,
         joinGroup,
         joinByInvite,
         addInvite,

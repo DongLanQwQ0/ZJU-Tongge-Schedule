@@ -140,6 +140,21 @@ async function twoUsers(store) {
     return [a, b];
 }
 
+/**
+ * 让某人进群。
+ *
+ * 群码已经不是票了（2026-09-18-group-code-not-a-ticket-design.md），所以这里
+ * 走真实的那条路：先取群主发出去的那枚票，再用票入群。
+ * 「B 进群」在下面出现十几次，收成一个函数省得每处都抄一遍。
+ */
+async function joinViaLink(store, groupCode, userId) {
+    const g = await store.readGroup(groupCode);
+    const at = Date.now();
+    const live = (g.invites || []).filter((i) => !i.revokedAt && (i.expiresAt == null || at < i.expiresAt));
+    assert.ok(live.length, `群 ${groupCode} 没有能用的票，测试进不去`);
+    return store.joinByInvite(live[0].code, userId);
+}
+
 test('建群：创建者自动入群，邀请码为 6 位数字', async () => {
     const { store } = await tmpStore();
     const [a] = await twoUsers(store);
@@ -153,8 +168,8 @@ test('入群幂等：重复加入不产生重复成员', async () => {
     const { store } = await tmpStore();
     const [a, b] = await twoUsers(store);
     const g = await store.createGroup(a.id, '组');
-    await store.joinGroup(g.code, b.id);
-    await store.joinGroup(g.code, b.id);
+    await joinViaLink(store, g.code, b.id);
+    await joinViaLink(store, g.code, b.id);
     assert.equal((await store.readGroup(g.code)).members.length, 2);
 });
 
@@ -167,12 +182,90 @@ test('入群：邀请码格式错 / 群不存在', async () => {
     await assert.rejects(() => store.joinGroup('99999999', a.id), /群组不存在/);
 });
 
+test('群码不再是票：拿群码入群 404，只有票能进', async () => {
+    const { store } = await tmpStore();
+    const [a, b] = await twoUsers(store);
+    const g = await store.createGroup(a.id, '组');
+
+    // 新群自带一枚永久票，且它是唯一能用来入群的东西
+    assert.equal(g.invites.length, 1, '建群就带一条默认链接');
+    assert.equal(g.invites[0].expiresAt, null, '默认链接不过期');
+    assert.equal(g.invites[0].label, '默认链接');
+
+    // 群码只是这个群的地址 —— 它出现在每个成员都拿得到的响应里，
+    // 如果它还能入群，就等于有一张不可收回、不可过期的永久门票
+    await assert.rejects(() => store.joinByInvite(g.code, b.id), /邀请链接无效/);
+
+    await store.joinByInvite(g.invites[0].code, b.id);
+    assert.equal((await store.readGroup(g.code)).members.length, 2);
+});
+
+test('默认链接：群主故意删光之后不会自己长回来', async () => {
+    const { store } = await tmpStore();
+    const [a, b] = await twoUsers(store);
+    const g = await store.createGroup(a.id, '组');
+    const inv = g.invites[0].code;
+
+    await store.revokeInvite(g.code, a.id, inv);
+    await store.purgeInvite(g.code, a.id, inv);
+    assert.deepEqual((await store.readGroup(g.code)).invites, [], '票被收光了');
+
+    // 再跑一次启动流程：群主删光是决定，不该被「补老群」的逻辑撤销
+    await store.init();
+    assert.deepEqual((await store.readGroup(g.code)).invites, [], 'init() 不该偷偷补回来');
+    await assert.rejects(() => store.joinByInvite(inv, b.id), /邀请链接无效/);
+});
+
+/** 手写一个「改版前」的群文件：没有 invites、没有 invitesSeeded */
+function writeLegacyGroup(dir, code, creatorId, invites) {
+    fs.mkdirSync(path.join(dir, 'groups'), { recursive: true });
+    const g = {
+        v: 2, code, name: '老群', creatorId, joinMode: 'open',
+        createdAt: Date.now(), updatedAt: Date.now(),
+        members: [{ userId: creatorId, joinedAt: Date.now() }], requests: []
+    };
+    if (invites) g.invites = invites;
+    fs.writeFileSync(path.join(dir, 'groups', `${code}.json`), JSON.stringify(g), 'utf8');
+}
+
+test('老群补齐：一枚票都没有的老群，启动时补一条默认链接', async () => {
+    const { store, dir } = await tmpStore();
+    const [a, b] = await twoUsers(store);
+    writeLegacyGroup(dir, '87654321', a.id);
+
+    await store.init();                                   // 「重启一次」
+
+    const g = await store.readGroup('87654321');
+    assert.equal(g.invites.length, 1, '补上一枚默认链接，否则谁也别想进来');
+    assert.equal(g.invites[0].expiresAt, null, '补的是永久票');
+    assert.equal(g.invitesSeeded, true, '记下「这个群已经过过这一步」');
+    // 补完立刻能用
+    await store.joinByInvite(g.invites[0].code, b.id);
+    assert.equal((await store.readGroup('87654321')).members.length, 2);
+});
+
+test('老群补齐：已经有票的老群只打标记，不动它的票', async () => {
+    const { store, dir } = await tmpStore();
+    const [a] = await twoUsers(store);
+    // 群主曾经发过一枚、又作废了 —— 这是「他收光了」的意思，不是「还没补过」
+    writeLegacyGroup(dir, '87654322', a.id, [
+        { code: '11112222', label: '发过的', createdAt: Date.now() - 1000, createdBy: a.id, expiresAt: null, revokedAt: Date.now() }
+    ]);
+
+    await store.init();
+
+    const g = await store.readGroup('87654322');
+    assert.equal(g.invites.length, 1, '不许塞新票');
+    assert.equal(g.invites[0].code, '11112222');
+    assert.equal(g.invitesSeeded, true);
+});
+
 test('群组详情：成员信息实时取自账号表，且不含密码字段', async () => {
     const { store } = await tmpStore();
     const [a, b] = await twoUsers(store);
     await store.setUserCourses(b.id, [COURSE]);
     const g = await store.createGroup(a.id, '组');
-    await store.joinGroup(g.code, b.id);
+    await joinViaLink(store, g.code, b.id);
 
     const detail = await store.groupDetail(g.code);
     assert.equal(detail.members.length, 2);
@@ -188,7 +281,7 @@ test('退群：群主不能退群，只能解散', async () => {
     const { store } = await tmpStore();
     const [a, b] = await twoUsers(store);
     const g = await store.createGroup(a.id, '组');
-    await store.joinGroup(g.code, b.id);
+    await joinViaLink(store, g.code, b.id);
 
     await assert.rejects(() => store.leaveGroup(g.code, a.id), /群主/);
     await store.leaveGroup(g.code, b.id);
@@ -201,7 +294,7 @@ test('对外备注：自己设的，群里所有人都能在群组详情里看�
     const { store } = await tmpStore();
     const [a, b] = await twoUsers(store);
     const g = await store.createGroup(a.id, '组');
-    await store.joinGroup(g.code, b.id);
+    await joinViaLink(store, g.code, b.id);
 
     await store.setSelfRemark(g.code, b.id, '三班-小灰');
 
@@ -215,9 +308,9 @@ test('对外备注：自己的和别人的互不干扰，一个群一份', async
     const { store } = await tmpStore();
     const [a, b] = await twoUsers(store);
     const g1 = await store.createGroup(a.id, '组一');
-    await store.joinGroup(g1.code, b.id);
+    await joinViaLink(store, g1.code, b.id);
     const g2 = await store.createGroup(a.id, '组二');
-    await store.joinGroup(g2.code, b.id);
+    await joinViaLink(store, g2.code, b.id);
 
     await store.setSelfRemark(g1.code, b.id, '组一里的我');
     await store.setSelfRemark(g2.code, b.id, '组二里的我');
@@ -233,7 +326,7 @@ test('对外备注：传空串恢复昵称，超长和不在群里都被拒', as
     const { store } = await tmpStore();
     const [a, b] = await twoUsers(store);
     const g = await store.createGroup(a.id, '组');
-    await store.joinGroup(g.code, b.id);
+    await joinViaLink(store, g.code, b.id);
 
     await assert.rejects(() => store.setSelfRemark(g.code, b.id, '一'.repeat(13)), /最多 12 个字/);
 
@@ -249,13 +342,13 @@ test('对外备注：退群 / 被移除后不残留', async () => {
     const { store } = await tmpStore();
     const [a, b] = await twoUsers(store);
     const g = await store.createGroup(a.id, '组');
-    await store.joinGroup(g.code, b.id);
+    await joinViaLink(store, g.code, b.id);
 
     await store.setSelfRemark(g.code, b.id, '走之前');
     await store.leaveGroup(g.code, b.id);
     assert.equal((await store.readGroup(g.code)).selfRemarks[b.id], undefined);
 
-    await store.joinGroup(g.code, b.id);
+    await joinViaLink(store, g.code, b.id);
     await store.setSelfRemark(g.code, b.id, '再回来');
     await store.removeMember(g.code, a.id, b.id);
     assert.equal((await store.readGroup(g.code)).selfRemarks[b.id], undefined);
@@ -265,7 +358,7 @@ test('解散：非群主被拒', async () => {
     const { store } = await tmpStore();
     const [a, b] = await twoUsers(store);
     const g = await store.createGroup(a.id, '组');
-    await store.joinGroup(g.code, b.id);
+    await joinViaLink(store, g.code, b.id);
 
     await assert.rejects(() => store.deleteGroup(g.code, b.id), /只有群主/);
     await store.deleteGroup(g.code, a.id);
@@ -277,7 +370,7 @@ test('我的群组列表', async () => {
     const [a, b] = await twoUsers(store);
     const g1 = await store.createGroup(a.id, '甲组');
     const g2 = await store.createGroup(b.id, '乙组');
-    await store.joinGroup(g2.code, a.id);
+    await joinViaLink(store, g2.code, a.id);
 
     const list = await store.listGroupsForUser(a.id);
     assert.equal(list.length, 2);

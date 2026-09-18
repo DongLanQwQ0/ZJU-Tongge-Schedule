@@ -153,7 +153,8 @@
 
         createGroup: function (name) { return request('api/groups', 'POST', { name: name }); },
         // 换掉群自己的码（旧链接全部失效）
-        rotateGroupCode: function (code) { return request('api/groups/' + code + '/rotate-code', 'POST', {}); },
+        // 这里原本有 rotateGroupCode（换群码）。群码不再是票之后它没有用了，
+        // 服务端那条路由也已删除 —— 想收回链接就作废那一枚票
         // 发一枚新的邀请链接；ttl 取 '1d' / '3d' / '7d' / '30d' / 'never'
         addInvite: function (code, ttl, label) {
             return request('api/groups/' + code + '/invites', 'POST', { ttl: ttl, label: label });

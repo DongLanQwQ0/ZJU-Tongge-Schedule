@@ -94,6 +94,14 @@ async function mkAdmin(prefix) {
     return u;
 }
 
+/** 群主视角：这个群现在能用的那枚票（入群只认票，群码是地址、不是票） */
+async function liveTicket(code, ownerToken) {
+    const d = await api(`/api/groups/${code}`, { token: ownerToken });
+    const live = (d.body.invites || []).filter((i) => i.active);
+    assert.ok(live.length, `群 ${code} 没有能用的票，测试进不去`);
+    return live[0].code;
+}
+
 /** 新建一个「管理员 + 普通用户 + 一个群（两人都在）」的干净场景 */
 async function scene() {
     const admin = await mkAdmin('管');
@@ -102,7 +110,7 @@ async function scene() {
     const g = await api('/api/groups', { method: 'POST', token: a.token, body: { name: '测试群' } });
     assert.equal(g.status, 200);
     const code = g.body.code;
-    await api(`/api/groups/${code}/join`, { method: 'POST', token: b.token, body: {} });
+    await api(`/api/groups/${await liveTicket(code, a.token)}/join`, { method: 'POST', token: b.token, body: {} });
     return { admin, a, b, code };
 }
 
@@ -301,8 +309,9 @@ test('管理员删号：群主身份移交给最早入群的成员', async () =>
     const late = await mkUser('晚来的');
     const g = await api('/api/groups', { method: 'POST', token: owner.token, body: { name: '移交群' } });
     const code = g.body.code;
-    await api(`/api/groups/${code}/join`, { method: 'POST', token: early.token, body: {} });
-    await api(`/api/groups/${code}/join`, { method: 'POST', token: late.token, body: {} });
+    const ticket = await liveTicket(code, owner.token);
+    await api(`/api/groups/${ticket}/join`, { method: 'POST', token: early.token, body: {} });
+    await api(`/api/groups/${ticket}/join`, { method: 'POST', token: late.token, body: {} });
 
     const r = await api(`/api/admin/users/${owner.id}`, { method: 'DELETE', token: admin.token, body: {} });
     assert.equal(r.status, 200);

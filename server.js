@@ -756,8 +756,9 @@ async function createServer(options = {}) {
         ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/join$/, async (req, res, m) => {
             limiter.join.check(clientIp(req));   // 枚举邀请码的主要入口，卡死在这里
             const { user } = await requireUser(req);
-            // 走 joinByInvite：它先认「有时效的邀请码」，再退回群主自己的永久码。
-            // 直接用 joinGroup 的话，邀请码（不是群码）根本找不到文件。
+            // 走 joinByInvite：这里的数字是**别人递过来的那串码**，只可能是某一枚票
+            // （群码不再是票，拿群码来一律 404 —— 见 2026-09-18-group-code-not-a-ticket-design.md）。
+            // 直接用 joinGroup 的话，票码根本找不到对应的群文件。
             const r = await store.joinByInvite(validateCode(m[1]), user.id);
             return { ok: true, code: r.group.code, name: r.group.name, pending: r.pending };
         }],
@@ -813,22 +814,10 @@ async function createServer(options = {}) {
             return { ok: true, code: g.code, ownerId: g.creatorId };
         }],
 
-        // 群主换掉群自己的码：以前发出去的所有旧链接一起失效。
-        // 主要给改版前那批 6 位老群用 —— 老码空间小，早点换掉更稳。
-        ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/rotate-code$/, async (req, res, m) => {
-            const { user } = await requireUser(req);
-            const r = await store.rotateGroupCode(validateCode(m[1]), user.id, {});
-            store.appendAudit({
-                event: 'group_rotate_code',
-                by: user.nickname,
-                from: r.oldCode,
-                to: r.code,
-                ip: clientIp(req)
-            });
-            return { ok: true, oldCode: r.oldCode, code: r.code };
-        }],
-
         // 群主发一枚新的邀请链接，可带有效期：1d / 3d / 7d / 30d / never
+        // （这里原本有一条 POST /rotate-code「换群码」：群码不再能入群之后它
+        //   什么也收不回来，却会改掉群的地址，所以连同存储层一起删了。
+        //   想收回链接就作废那张票。见 2026-09-18-group-code-not-a-ticket-design.md §3.4）
         ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/invites$/, async (req, res, m) => {
             const { user } = await requireUser(req);
             const body = await readBody(req, res);
@@ -1048,21 +1037,6 @@ async function createServer(options = {}) {
                 ip: clientIp(req)
             });
             return { ok: true, userId: target.id, nickname: target.nickname, remarks };
-        }],
-
-        // 管理员给任意群换一个 8 位新码（旧码当场作废）。
-        // 主要用途：清掉改版前那批 6 位老码 —— 它们的空间小得多。
-        ['POST', /^\/api\/admin\/groups\/(\d{6}|\d{8})\/rotate-code$/, async (req, res, m) => {
-            const { user: admin } = await requireAdmin(req);
-            const r = await store.rotateGroupCode(validateCode(m[1]), admin.id, { asAdmin: true });
-            store.appendAudit({
-                event: 'admin_rotate_group_code',
-                by: admin.nickname,
-                from: r.oldCode,
-                to: r.code,
-                ip: clientIp(req)
-            });
-            return { ok: true, oldCode: r.oldCode, code: r.code };
         }],
 
         // 解散任意群组，不需要是群主

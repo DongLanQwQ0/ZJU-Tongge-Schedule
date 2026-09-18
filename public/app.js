@@ -202,7 +202,7 @@
         currentWindow: null,
         admin: null,
         screen: null,
-        // 当前邀请卡片里展示的是哪一枚码。null = 群主自己的永久码
+        // 当前邀请卡片里展示的是哪一枚票。null = 按「最新一枚还能用的」自动挑
         activeInvite: null,
         newInviteTtl: 'never'
     };
@@ -1194,16 +1194,15 @@
             return;
         }
         box.innerHTML = state.groups.map(function (g) {
-            // 群主关掉「成员分享」之后，成员连码都不该看到 —— 首页这张卡片也算。
-            // 否则一边说「只有群主能分享」，一边把码印在成员眼前，那开关就是假的。
-            // 注意 data-code 不能动：整张卡片就是靠它进群的。改的只是印出来的那行字。
-            // 条件是 isCreator || 开关没关，而不是直接 isCreator ——
-            // 默认开着时成员看得到码是上线前就有的行为，没理由顺手改掉
-            var canSeeCode = g.isCreator || g.memberShare !== false;
+            // 卡片上印的是**一枚能用的票**（服务端算好的 shareCode），不是群码 ——
+            // 群码已经不能用来入群了（它是群的地址），印出来等于让人去复制一段
+            // 打不开的链接。成员分享被关掉、或者一枚票都没有时，shareCode 就是 null，
+            // 这行字整段不印。
+            // 注意 data-code 不能动：整张卡片就是靠它进群的。改的只是印出来的那行字
             return '<button class="item" data-code="' + esc(g.code) + '">' +
                 '<div class="grow"><div class="title">' + esc(g.name) +
                 (g.pending ? ' <span class="chip-lv nearby">等群主同意</span>' : '') + '</div>' +
-                '<div class="sub">' + (canSeeCode ? '邀请码 ' + esc(g.code) + ' · ' : '') +
+                '<div class="sub">' + (g.shareCode ? '邀请码 ' + esc(g.shareCode) + ' · ' : '') +
                 g.memberCount + ' 人' +
                 (g.isCreator ? ' · 你是群主' : '') + '</div></div>' +
                 '<span class="chev">›</span></button>';
@@ -1441,7 +1440,10 @@
                 return true;
             }
             toast('已加入「' + r.name + '」');
-            await openGroup(code);
+            // 用**服务端回给我们的群码**去打开，而不是地址栏里那串 ——
+            // 地址栏里那串是**票**（群码已经不能入群了）。拿票去拉群详情会 404，
+            // 页面就掉回首页，看着像「明明加进去了却打不开」
+            await openGroup(r.code || code);
             return true;
         } catch (e) {
             if (e.status === 401) { state.pendingCode = code; return false; }
@@ -1683,22 +1685,26 @@
         // 与其让他点了之后吃一个红字报错，不如直接把这颗按钮藏掉
         $('#btn-group-leave').hidden = iAmOwner;
 
-        // 邀请卡片：展示哪一枚码、有没有可用的码，都在这里定。
-        // 群主关掉「成员分享」之后，成员这边没有任何可分享的东西 ——
-        // 摆一个「——」加一张空二维码不像「没码」，像「页面坏了」，所以整块换掉。
+        // 邀请卡片有三种状态，都在这里定：
+        //   1. 有能用的票      -> 码 + 二维码 + 三颗可用按钮
+        //   2. 成员分享被关掉  -> #invite-closed（成员专用）
+        //   3. 一枚能用的票都没有 -> #invite-empty（群主看到出口，成员看到「找群主要」）
+        // 第 3 种以前是「——」占位符 + 一张空二维码 + 三颗灰按钮 ——
+        // 那不像「暂时没码」，像「页面坏了」。以前群主有「自己的永久码」兜底，
+        // 所以只有成员会看到它 —— 那个不对称也一起修了（见 §6.2 的空态）
         // 卡片本身留着：它是群组页的一部分，凭空消失更让人摸不着头脑
         var memberShareOff = !iAmOwner && g.memberShare === false;
         var shareBox = $('#invite-share-box');
         var closedBox = $('#invite-closed');
+        var emptyBox = $('#invite-empty');
         var canShare = false;
 
         if (memberShareOff) {
             shareBox.hidden = true;
             closedBox.hidden = false;
+            emptyBox.hidden = true;
         } else {
-            shareBox.hidden = false;
             closedBox.hidden = true;
-
             var disp = currentDisplayCode();
             var codeEl = $('#group-code');
             var noteEl = $('#group-current-note');
@@ -1707,29 +1713,29 @@
             canShare = !!disp;
 
             if (disp) {
+                emptyBox.hidden = true;
+                shareBox.hidden = false;
                 codeEl.textContent = disp.code;
                 urlEl.hidden = false;
                 renderQr(disp.code);
-                // 讲清楚这个码是谁的、还能用多久
-                if (disp.isOwnerCode) {
-                    noteEl.textContent = '这是你自己的永久码，永不过期。发给同学的码在「管理邀请链接」里。';
-                } else if (disp.invite.expiresAt == null) {
+                // 讲清楚这枚码还能用多久（没有「群主自己的永久码」这种东西了）
+                if (disp.invite.expiresAt == null) {
                     noteEl.textContent = '这条链接永久有效。';
                 } else {
                     noteEl.textContent = '这条链接' + inviteStateText(disp.invite) + '。';
                 }
             } else {
-                // 没有可用码：多半是群主发的链接都过期/作废了
-                codeEl.textContent = '——';
-                noteEl.textContent = '现在没有能用的邀请链接了。';
-                urlEl.hidden = true;
-                qrBox.innerHTML = '<div class="tiny">没有可用的邀请链接</div>';
+                // 一枚能用的票都没有：整块换成说明，不摆占位符和空二维码
+                shareBox.hidden = true;
+                emptyBox.hidden = false;
+                qrBox.innerHTML = '';
+                renderInviteEmpty(iAmOwner);
             }
         }
 
         // 分享按钮在没有可用码时必须禁用 —— 否则用户会复制出一个打不开的链接。
-        // 成员分享被关掉时 canShare 保持 false，这里自动兜住：哪怕上面哪个分支漏了，
-        // 也点不出一个能用的链接
+        // 成员分享被关掉、或者没有票时 canShare 保持 false，这里自动兜住：
+        // 哪怕上面哪个分支漏了，也点不出一个能用的链接
         ['#btn-copy-code', '#btn-copy-link', '#btn-zoom-qr'].forEach(function (sel) {
             var b = $(sel);
             if (b) b.disabled = !canShare;
@@ -1988,8 +1994,12 @@
         var shown = displayName(target);
         var pw = await askText({
             title: '转让群主 · 最后一步',
-            hint: '「' + shown + '」会成为群主：能改群名、审批进群、管理邀请码、移除成员、解散群组。' +
-                  '你会变成普通成员，这些权限立刻失效；你现在这条永久码会变成 TA 的。',
+            hint: '「' + shown + '」会成为群主：能改群名、审批进群、管理邀请链接、移除成员、解散群组。' +
+                  '你会变成普通成员，这些权限立刻失效。' +
+                  // 「你那条永久码会变成 TA 的」这句随群码改制删掉了：现在没有「群主自己的永久码」，
+                  // 分享链接属于群、不属于谁当群主 —— 换了群主它们照旧有效，
+                  // 只是你不再能收回它们。这才是交接时真正值得知道的事
+                  '群里的分享链接不会因为换人就失效，但你不能再收回它们了。',
             placeholder: '输入密码确认',
             password: true,
             maxlength: 64
@@ -2112,7 +2122,7 @@
         return inv.active ? 'chip-lv same' : 'chip-lv cross';
     }
 
-    /** 能用的码，越新越靠前；群主自己的永久码单独走 ownerCode */
+    /** 能用的票，越新越靠前（卡片展示第一枚） */
     function activeInvites() {
         var g = state.group;
         if (!g || !g.invites) return [];
@@ -2123,8 +2133,11 @@
      * 决定邀请卡片上该展示哪一枚码：
      *  1. 用户手动选过的（state.activeInvite）
      *  2. 还能用的里面最新的那枚
-     *  3. 群主自己的永久码（老群没有 invites，全靠它）
-     *  4. 都没有 -> null，卡片改成提示「让群主要个新链接」
+     *  3. 都没有 -> null，卡片改成说明（群主那边是「生成一条」，成员那边是「找群主要」）
+     *
+     * 这里**不再**回落到群码：群码不是票，它进不了群（2026-09-18 §3.1）。
+     * 以前只有群主有这条回落，于是「群里没有票」时群主看到的正常、成员看到的是
+     * 一张坏卡片 —— 那个不对称就是这次要修的毛病。
      */
     function currentInvite() {
         var g = state.group;
@@ -2140,19 +2153,64 @@
     }
 
     /**
-     * 邀请卡片上那个码是什么。
-     * @returns {{code:string, invite:object|null, isOwnerCode:boolean}|null}
+     * 邀请卡片上那个码是什么。没有能用的票时返回 null（交给 §空态渲染）。
+     * @returns {{code:string, invite:object}|null}
      */
     function currentDisplayCode() {
         var g = state.group;
         if (!g) return null;
         var inv = currentInvite();
-        if (inv) return { code: inv.code, invite: inv, isOwnerCode: false };
-        // 没有可用的邀请码了：群主退回自己的永久码，成员就只能求助群主
-        if (g.isCreator && g.ownerCode) {
-            return { code: g.ownerCode, invite: null, isOwnerCode: true };
-        }
+        if (inv) return { code: inv.code, invite: inv };
         return null;
+    }
+
+    /**
+     * 「一枚能用的票都没有」时，邀请卡片上那块说明。
+     *
+     * 两种角色给的出口不同，这里必须分开写：
+     *   群主 —— 当场就能生成（点一下的事），所以给按钮
+     *   成员 —— 本来就无权发新票（store.addInvite 只认 creatorId），
+     *          所以只能告诉他去找谁，别让人在那儿干等
+     */
+    function renderInviteEmpty(isOwner) {
+        var emoji = $('#invite-empty-emoji');
+        var text = $('#invite-empty-text');
+        var btn = $('#btn-invite-create');
+        if (!text) return;
+        if (isOwner) {
+            if (emoji) emoji.textContent = '🔗';
+            text.innerHTML = '这个群现在没有任何分享链接，谁也进不来。<br>' +
+                '链接可以随时收回、也可以随时重发，所以别怕发出去。';
+            if (btn) btn.hidden = false;
+        } else {
+            if (emoji) emoji.textContent = '🫥';
+            text.innerHTML = '群主似乎没有分享他的群群~<br>' +
+                '想进来的同学，让 TA 找群主要一条 —— TA 那边随手就能生成，' +
+                '你负责把人喊来就好 (๑•̀ㅂ•́)و✧';
+            if (btn) btn.hidden = true;
+        }
+    }
+
+    /**
+     * 群主在空态里一键生成一条永久链接。
+     * 走的是管理页同一条接口（不新增路由），生成完就地重画。
+     */
+    async function createOwnInvite() {
+        var g = state.group;
+        if (!g) return;
+        if (!g.isCreator) return toast('只有群主能发新邀请码', true);
+        var btn = $('#btn-invite-create');
+        if (btn) btn.disabled = true;
+        try {
+            var r = await API.addInvite(g.code, 'never', '');
+            state.activeInvite = r.invite.code;   // 生成完就展示它，省得群主再去找
+            await reloadGroup();
+            toast('链接生成好了：' + r.invite.code);
+        } catch (e) {
+            toast(e.message, true);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     }
 
     // -------------------------------------------------------- 邀请链接管理页
@@ -2201,9 +2259,6 @@
         var all = inviteList();
         var live = all.filter(function (i) { return i.active; });
         var dead = all.filter(function (i) { return !i.active; });
-
-        var ownerCodeEl = $('#inv-owner-code');
-        if (ownerCodeEl) ownerCodeEl.textContent = g.ownerCode || g.code;
 
         // ---- 有效链接 ----
         var countEl = $('#inv-count');
@@ -2257,30 +2312,9 @@
         toast('已切到 ' + code + '，群组页上分享的就是它');
     }
 
-    /**
-     * 换掉群自己的码：以前发出去的所有链接一起失效。
-     *
-     * 为什么要有这个按钮：改版前建的群码是 6 位（10⁶ 空间），配 20 次/分钟的
-     * 限流，枚举完只要一个多月。换掉之后就是 8 位，代价是老链接全废。
-     */
-    async function rotateGroupCode() {
-        var g = state.group;
-        if (!g) return;
-        var ok = await askConfirm(
-            '换掉群自己的码',
-            '现在这个码 ' + g.code + ' 会立刻作废，以前发出去的所有链接都会失效，' +
-            '需要你把新码重新发给还没进群的同学。已经进群的人不受影响。',
-            '换新的'
-        );
-        if (!ok) return;
-        try {
-            var r = await API.rotateGroupCode(g.code);
-            state.activeInvite = null;
-            // 群码变了：整页按新码重新打开
-            await openGroup(r.code);
-            toast('已换成新码：' + r.code + '，请重新发给同学');
-        } catch (e) { toast(e.message, true); }
-    }
+    // 这里原本有一个「换掉群自己的码」的按钮与函数。群码不能再入群之后
+    // （2026-09-18-group-code-not-a-ticket-design.md §3.4），换码什么也收不回来，
+    // 只会改掉群的地址 —— 想收回某条链接，直接在列表里作废那一枚。
 
     async function generateInvite() {
         var g = state.group;
@@ -2372,7 +2406,6 @@
             });
         });
         $('#btn-inv-gen').addEventListener('click', generateInvite);
-        $('#btn-inv-rotate').addEventListener('click', rotateGroupCode);
 
         // 勾选走事件委托：列表是整体重画的，逐个绑会漏
         $('#inv-active-list').addEventListener('change', function (e) {
@@ -2519,6 +2552,8 @@
 
         // 多个链接的增删作废都在独立的「邀请链接」页里，这里只留入口
         $('#btn-manage-invites').addEventListener('click', openInvites);
+        // 空态里那颗「生成一条」：群主专属，不走管理页也能补一条出来
+        $('#btn-invite-create').addEventListener('click', createOwnInvite);
 
         $('#qr-modal-close').addEventListener('click', function () { closeModal($('#qr-modal')); });
         $('#qr-modal').addEventListener('click', function (e) {
