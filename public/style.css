@@ -645,6 +645,16 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
    有透明通道的图四角本来就什么都没有，加了也不影响。 */
 .foot-mascot.tile { border-radius: 9px; opacity: .72; }
 
+/* 页脚底下那段净空。灯固定在视口下方（见 .bg-photo），页脚滑到底时会压在灯上，
+   所以留一段跑位把署名顶上去。高度按视口算：灯的落点本来就是视口高度的百分比，
+   净空跟着一起缩，手机上 ~172px、桌面上 ~216px，比例一致。
+   浅色主题没有灯 —— 不留，免得白多出一截空白。 */
+.foot-clearance { display: none; }
+:root[data-theme="dark"] .foot-clearance {
+    display: block;
+    height: clamp(120px, 20vh, 260px);
+}
+
 /* ------------------------------------------------------------ 表单内联错误 */
 
 /* 登录失败的提示留在表单里，不靠三秒就消失的 toast */

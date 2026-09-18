@@ -306,6 +306,20 @@ test('装饰背景：只在深色主题出现，压在内容之下，且不吃�
     assert.match(html, /<div class="bg-photo" aria-hidden="true"><\/div>/, 'index.html 里得有这一层');
 });
 
+test('页脚净空：只在深色主题留一段，把署名顶到灯上方', () => {
+    assert.match(html, /<div class="foot-clearance" aria-hidden="true"><\/div>/,
+        'index.html 里得有这段占位');
+    assert.match(css, /\.foot-clearance\s*\{\s*display:\s*none/, '浅色主题底下没有灯，不留净空');
+
+    const dark = /\[data-theme="dark"\]\s*\.foot-clearance\s*\{([^}]*)\}/.exec(css);
+    assert.ok(dark, '深色主题里得有一条 .foot-clearance 的规则');
+    // 灯是固定的、亮部落在这个比例上；净空被调小之后署名会重新糊在灯上，
+    // 所以下限得钉住（实测手机 172px / 桌面 160px 时，署名稳稳在灯上方）
+    const m = /height:\s*clamp\((\d+)px/.exec(dark[1]);
+    assert.ok(m, '净空高度应当写成带下限的 clamp（跟着视口缩，但不能小到失去意义）');
+    assert.ok(Number(m[1]) >= 100, `净空下限太小（${m[1]}px），页脚会重新压到灯上`);
+});
+
 test('style.css 里引用的图片都在 public/ 下', () => {
     const urls = [...css.matchAll(/url\(([^)]+)\)/g)]
         .map((m) => m[1].replace(/['"]/g, '').trim())

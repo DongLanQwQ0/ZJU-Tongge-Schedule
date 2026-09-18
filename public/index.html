@@ -590,6 +590,11 @@
     <span class="foot-slot"><img class="foot-mascot" id="foot-mascot-right" alt="" hidden></span>
 </footer>
 
+<!-- 页脚净空：背景那盏灯是**固定**在视口下方的，页脚滑到底时会正好压在灯上，
+     署名和那几行字就糊了。这里在页脚下面留一段空跑位，滚到底这一下能把署名
+     带到灯的上方。浅色主题底下没有灯，这段就不留（见 style.css 的 .foot-clearance）。 -->
+<div class="foot-clearance" aria-hidden="true"></div>
+
 </main>
 
 <!-- 内测提示：每台设备首次打开时弹一次 -->
