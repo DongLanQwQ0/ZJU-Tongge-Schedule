@@ -282,6 +282,10 @@ main { max-width: 720px; margin: 0 auto; padding: 14px; }
 }
 .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
 .card h2 .sub { font-weight: 400; color: var(--text-2); font-size: 13px; }
+.home-groups-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.home-groups-head h2 { margin-bottom: 0; white-space: nowrap; }
+.home-groups-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.home-groups-actions .btn { white-space: nowrap; }
 .muted { color: var(--text-2); font-size: 13px; }
 .tiny { font-size: 12px; color: var(--text-2); }
 .row { display: flex; gap: 10px; }
@@ -449,6 +453,29 @@ label.field span { display: block; font-size: 13px; color: var(--text-2); margin
 
 .weeks { display: flex; gap: 7px; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: none; }
 .weeks::-webkit-scrollbar { display: none; }
+.pager { display:flex; align-items:center; justify-content:center; gap:10px; margin-top:12px; }
+.pager > span { min-width:42px; text-align:center; font-size:12px; color:var(--text-2); }
+.member-search { position:relative; margin-bottom:10px; }
+.member-search-row { display:flex; align-items:center; gap:8px; }
+.member-search-row .input { flex:1 1 auto; min-width:0; }
+.member-search-row .btn { flex:0 0 auto; }
+.search-history { display:flex; flex-wrap:wrap; gap:6px; padding-top:6px; }
+.search-history[hidden] { display:none; }
+.recent-strip { display:flex; gap:10px; overflow-x:auto; padding:2px 0 6px; scrollbar-width:none; }
+.recent-strip { overscroll-behavior-x:contain; cursor:grab; }
+.recent-strip:active { cursor:grabbing; }
+.recent-strip::-webkit-scrollbar { display:none; }
+.recent-strip .item {
+    flex:0 0 min(250px, 76vw);
+    min-height:68px;
+    width:auto;
+    padding:10px 12px;
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    background:var(--fill-soft);
+    box-sizing:border-box;
+}
+.recent-strip .item:last-child { border-bottom:1px solid var(--line); }
 .weeks button {
     flex: 0 0 auto; padding: 6px 12px; border-radius: 15px;
     background: var(--fill); color: var(--text); font-size: 13px; white-space: nowrap;

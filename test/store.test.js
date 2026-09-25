@@ -277,6 +277,126 @@ test('群组详情：成员信息实时取自账号表，且不含密码字段',
     assert.equal(m.pwSalt, undefined);
 });
 
+test('群组详情分页：搜索、查看次数排序与全员周次汇总', async () => {
+    const { store } = await tmpStore();
+    const owner = await store.createUser('群主', 'pw123456');
+    const z = await store.createUser('张三', 'pw123456');
+    const l = await store.createUser('李四', 'pw123456');
+    const g = await store.createGroup(owner.id, '分页群');
+    await joinViaLink(store, g.code, z.id);
+    await joinViaLink(store, g.code, l.id);
+    await store.setUserCourses(z.id, [COURSE]);
+    const page = await store.groupDetail(g.code, owner.id, {
+        page: 1, pageSize: 1, viewCounts: { [l.id]: 3, [z.id]: 1 }
+    });
+    assert.equal(page.memberCount, 3);
+    assert.equal(page.memberTotalPages, 3);
+    assert.equal(page.members.length, 1);
+    assert.equal(page.members[0].id, l.id);
+    const recentTie = await store.groupDetail(g.code, owner.id, {
+        page: 1, pageSize: 2, viewCounts: { [l.id]: 1, [z.id]: 1 },
+        viewRecency: { [z.id]: 200, [l.id]: 100 }
+    });
+    assert.deepEqual(recentTie.members.slice(0, 2).map((m) => m.id), [z.id, l.id]);
+    assert.equal(page.self.id, owner.id);
+    assert.equal(page.semesterWindow.weekCount, 2);
+    const search = await store.groupDetail(g.code, owner.id, { page: 1, pageSize: 20, q: '张' });
+    assert.deepEqual(search.members.map((m) => m.nickname), ['张三']);
+    assert.equal(search.memberCount, 1);
+});
+
+test('群内分页搜索匹配昵称、我的私人备注和本群对外备注', async () => {
+    const { store } = await tmpStore();
+    const [owner, mate] = await twoUsers(store);
+    const other = await store.createUser('阿岚', 'password1');
+    const g = await store.createGroup(owner.id, '搜索群');
+    await joinViaLink(store, g.code, mate.id);
+    await joinViaLink(store, g.code, other.id);
+    await store.setRemark(owner.id, mate.id, '午间搭档');
+    await store.setSelfRemark(g.code, other.id, '晚间搭档');
+
+    const first = await store.groupDetail(g.code, owner.id, { page: 1, pageSize: 1, q: '搭档' });
+    const second = await store.groupDetail(g.code, owner.id, { page: 2, pageSize: 1, q: '搭档' });
+    assert.equal(first.memberCount, 2, '匹配总数应在分页前统计');
+    assert.equal(first.memberTotalPages, 2);
+    assert.deepEqual(new Set([...first.members, ...second.members].map((m) => m.id)),
+        new Set([mate.id, other.id]));
+
+    const byNickname = await store.groupDetail(g.code, owner.id, { page: 1, q: '小灰' });
+    assert.deepEqual(byNickname.members.map((m) => m.id), [mate.id], '原昵称仍可搜索');
+    const privateToOwner = await store.groupDetail(g.code, other.id, { page: 1, q: '午间' });
+    assert.equal(privateToOwner.memberCount, 0, '其他成员不能用我的私人备注搜索');
+    const publicToGroup = await store.groupDetail(g.code, mate.id, { page: 1, q: '晚间' });
+    assert.deepEqual(publicToGroup.members.map((m) => m.id), [other.id]);
+});
+
+test('群内首字母搜索覆盖私人备注、对外备注和昵称，仍按匹配总数分页', async () => {
+    const { store } = await tmpStore();
+    const [owner, mate] = await twoUsers(store);
+    const other = await store.createUser('阿岚', 'password1');
+    const g = await store.createGroup(owner.id, '首字母群');
+    await joinViaLink(store, g.code, mate.id);
+    await joinViaLink(store, g.code, other.id);
+    await store.setRemark(owner.id, mate.id, '木棉');
+    await store.setSelfRemark(g.code, other.id, '木星');
+
+    const privateMatch = await store.groupDetail(g.code, owner.id, { page: 1, q: 'mm' });
+    assert.deepEqual(privateMatch.members.map((m) => m.id), [mate.id], '木棉应能用 mm 找到');
+    const publicMatch = await store.groupDetail(g.code, owner.id, { page: 1, q: 'mx' });
+    assert.deepEqual(publicMatch.members.map((m) => m.id), [other.id], '群内对外备注也应支持首字母');
+    const nicknameMatch = await store.groupDetail(g.code, owner.id, { page: 1, q: 'xh' });
+    assert.deepEqual(nicknameMatch.members.map((m) => m.id), [mate.id], '原昵称也应支持首字母');
+
+    const first = await store.groupDetail(g.code, owner.id, { page: 1, pageSize: 1, q: 'm' });
+    const second = await store.groupDetail(g.code, owner.id, { page: 2, pageSize: 1, q: 'm' });
+    assert.equal(first.memberCount, 2);
+    assert.equal(first.memberTotalPages, 2);
+    assert.deepEqual(new Set([...first.members, ...second.members].map((m) => m.id)),
+        new Set([mate.id, other.id]));
+
+    const someoneElse = await store.groupDetail(g.code, other.id, { page: 1, q: 'mm' });
+    assert.equal(someoneElse.memberCount, 0, '私人备注的首字母也不能被别人搜索到');
+});
+
+test('跨群搜索按中文昵称首字母找到共同群成员', async () => {
+    const { store } = await tmpStore();
+    const [owner] = await twoUsers(store);
+    const mate = await store.createUser('木棉', 'password1');
+    const g = await store.createGroup(owner.id, '同班群');
+    await joinViaLink(store, g.code, mate.id);
+
+    const found = await store.searchGroupMembers(owner.id, 'mm');
+    assert.deepEqual(found.map((m) => m.id), [mate.id]);
+    assert.deepEqual(found[0].groups.map((group) => group.code), [g.code]);
+});
+
+test('跨群搜索按我的私人备注首字母找到成员，但不泄露给其他人', async () => {
+    const { store } = await tmpStore();
+    const [owner, mate] = await twoUsers(store);
+    const other = await store.createUser('阿岚', 'password1');
+    const g = await store.createGroup(owner.id, '备注首字母群');
+    await joinViaLink(store, g.code, mate.id);
+    await joinViaLink(store, g.code, other.id);
+    await store.setRemark(owner.id, mate.id, '木棉');
+
+    const mine = await store.searchGroupMembers(owner.id, 'mm');
+    assert.deepEqual(mine.map((m) => m.id), [mate.id]);
+
+    const hidden = await store.searchGroupMembers(other.id, 'mm');
+    assert.deepEqual(hidden.map((m) => m.id), [], '别人的私人备注不能被搜索到');
+});
+
+test('跨群搜索按共同群中的对外备注首字母找到成员', async () => {
+    const { store } = await tmpStore();
+    const [owner, mate] = await twoUsers(store);
+    const g = await store.createGroup(owner.id, '对外备注首字母群');
+    await joinViaLink(store, g.code, mate.id);
+    await store.setSelfRemark(g.code, mate.id, '木星');
+
+    const found = await store.searchGroupMembers(owner.id, 'mx');
+    assert.deepEqual(found.map((m) => m.id), [mate.id]);
+});
+
 test('退群：群主不能退群，只能解散', async () => {
     const { store } = await tmpStore();
     const [a, b] = await twoUsers(store);

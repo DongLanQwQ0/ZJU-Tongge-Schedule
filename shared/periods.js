@@ -72,10 +72,10 @@
         return null;
     }
 
-    /** 节次 -> '08:00-08:45'，用于表格行标题 */
+    /** 节次 -> '08:00–08:45'，用于表格行标题 */
     function periodLabel(period) {
         var p = periodInfo(period);
-        return p ? p.start + '-' + p.end : '';
+        return p ? p.start + '–' + p.end : '';
     }
 
     /** 展开节次区间为数组，如 (3,4) -> [3,4] */

@@ -15,14 +15,51 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const auth = require('./auth.js');
 const { createStatsStore } = require('./stats-store.js');
+const weeks = require('./weeks.js');
 
 const SESSION_TTL = 90 * 86400000;      // 会话 90 天
 const GROUP_TTL = 180 * 86400000;       // 群组 180 天不活动即清理
 const DORMANT_DAYS = 30;                // 没传课表 + 这么多天没登录 = 待清理
-const MAX_MEMBERS = 50;
+const MAX_MEMBERS = 200;
 const MAX_COURSES = 500;
 const MAX_GROUP_NAME = 20;
 const MAX_REMARK = 12;      // 自己给群友起的备注，最长 12 字
+
+// 中文名按拼音排序取首字母；常见多音字沿用已约定的读音。
+const COMMON_INITIALS = {
+    '张':'z','李':'l','王':'w','陈':'c','刘':'l','杨':'y','黄':'h','赵':'z','周':'z','吴':'w',
+    '徐':'x','孙':'s','胡':'h','朱':'z','高':'g','林':'l','何':'h','郭':'g','马':'m','罗':'l',
+    '梁':'l','宋':'s','郑':'z','谢':'x','韩':'h','唐':'t','冯':'f','于':'y','董':'d','萧':'x',
+    '程':'c','曹':'c','袁':'y','邓':'d','许':'x','傅':'f','沈':'s','曾':'z','彭':'p','吕':'l',
+    '苏':'s','卢':'l','蒋':'j','蔡':'c','贾':'j','丁':'d','魏':'w','薛':'x','叶':'y','余':'y',
+    '潘':'p','杜':'d','戴':'d','夏':'x','钟':'z','汪':'w','田':'t','任':'r','姜':'j','范':'f',
+    '方':'f','石':'s','姚':'y','谭':'t','廖':'l','邹':'z','熊':'x','金':'j','陆':'l','郝':'h','孔':'k',
+    '灰':'h','烬':'j','拳':'q','玄':'x','云':'y','星':'x','夜':'y','小':'x','明':'m','同':'t','格':'g'
+};
+const PINYIN_BOUNDARIES = [
+    ['a','阿'],['b','八'],['c','擦'],['d','搭'],['e','峨'],['f','发'],['g','嘎'],['h','哈'],
+    ['j','击'],['k','喀'],['l','垃'],['m','妈'],['n','拿'],['o','哦'],['p','趴'],['q','七'],
+    ['r','然'],['s','撒'],['t','他'],['w','挖'],['x','西'],['y','压'],['z','匝']
+];
+const pinyinCollator = new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base' });
+
+function initialsOf(name) {
+    return [...String(name || '')].map((ch) => {
+        if (/[a-z0-9]/i.test(ch)) return ch.toLowerCase();
+        if (COMMON_INITIALS[ch]) return COMMON_INITIALS[ch];
+        if (!/[\u3400-\u9fff]/u.test(ch)) return ch.toLowerCase();
+        for (let i = PINYIN_BOUNDARIES.length - 1; i >= 0; i--) {
+            if (pinyinCollator.compare(ch, PINYIN_BOUNDARIES[i][1]) >= 0) return PINYIN_BOUNDARIES[i][0];
+        }
+        return 'a';
+    }).join('');
+}
+
+function matchesSearchName(name, query) {
+    if (!name) return false;
+    return String(name).toLowerCase().includes(query) ||
+        (/^[a-z0-9]+$/.test(query) && initialsOf(name).includes(query));
+}
 
 /**
  * 会话令牌**只以 sha256 落盘**。
@@ -449,7 +486,7 @@ function createStore(dataDir, options) {
     // 为什么要有它：resolveSession 每个请求都会被调用一次，而它原本每次都要
     // 「读整个 sessions.json → 整体重写一遍」——只为了把 lastSeen 改成当前时间。
     // 实测（400 个会话）读+写 1.35ms，纯读 0.07ms，慢 19 倍，而且是全局串行。
-    // 一个班 50 人同时刷页，就是把这张表反复重写几十遍。
+    // 一个班 200 人同时刷页，就是把这张表反复重写几十遍。
     //
     // 所以读路径全程走内存；只有 lastSeen 的刷新攒够 SLA 才落盘（见 flushSessions）。
     let cachedSessions = null;
@@ -1598,7 +1635,7 @@ function createStore(dataDir, options) {
     }
 
     /** 组装群组详情：成员信息实时取自账号表，改一次名处处生效 */
-    async function groupDetail(code, viewerId) {
+    async function groupDetail(code, viewerId, options) {
         const g = await readGroup(code);
         if (!g) throw fail(404, '群组不存在或已解散');
         const users = await readUsers();
@@ -1625,6 +1662,29 @@ function createStore(dataDir, options) {
             })
             .filter(Boolean);
         const settings = groupSettings(g);
+        const opts = options || {};
+        const allCourses = members.map((m) => m.courses || []);
+        const semesterWindow = weeks.semesterWindow(allCourses);
+        const query = String(opts.q || '').trim().toLowerCase();
+        const viewer = byId.get(viewerId);
+        const viewerRemarks = viewer && viewer.remarks && typeof viewer.remarks === 'object' ? viewer.remarks : {};
+        const filtered = query ? members.filter((m) =>
+            matchesSearchName(m.nickname, query) ||
+            matchesSearchName(m.selfRemark, query) ||
+            matchesSearchName(viewerRemarks[m.id], query)) : members;
+        const order = filtered.slice().sort((a, b) => {
+            const counts = opts.viewCounts || {};
+            const recency = opts.viewRecency || {};
+            const byCount = (Number(counts[b.id]) || 0) - (Number(counts[a.id]) || 0);
+            const byRecent = (Number(recency[b.id]) || 0) - (Number(recency[a.id]) || 0);
+            return byCount || byRecent || ((a.joinedAt || 0) - (b.joinedAt || 0));
+        });
+        const pageSize = Math.min(50, Math.max(1, Number(opts.pageSize) || order.length || 1));
+        const page = Math.max(1, Number(opts.page) || 1);
+        const totalPages = Math.max(1, Math.ceil(order.length / pageSize));
+        const pageMembers = opts.page == null && opts.q == null && opts.viewCounts == null
+            ? order : order.slice((Math.min(page, totalPages) - 1) * pageSize, Math.min(page, totalPages) * pageSize);
+        const self = members.find((m) => m.id === viewerId) || null;
         const at = now();
         const invites = invitesOf(g);
         return {
@@ -1656,7 +1716,13 @@ function createStore(dataDir, options) {
                     })
                     .filter(Boolean)
                 : [],
-            members
+            members: pageMembers,
+            memberCount: order.length,
+            memberPage: opts.page == null && opts.q == null && opts.viewCounts == null ? 1 : Math.min(page, totalPages),
+            memberPageSize: pageSize,
+            memberTotalPages: totalPages,
+            self,
+            semesterWindow
         };
     }
 
@@ -1698,6 +1764,43 @@ function createStore(dataDir, options) {
         }
         out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
         return out;
+    }
+
+    async function searchGroupMembers(userId, rawQuery, targetIds) {
+        const q = String(rawQuery == null ? '' : rawQuery).trim().toLowerCase();
+        const wantedIds = new Set(Array.isArray(targetIds) ? targetIds : []);
+        if (!q && !wantedIds.size) return [];
+        const users = await readUsers();
+        const byId = new Map(users.map((u) => [u.id, u]));
+        const viewer = byId.get(userId);
+        const viewerRemarks = viewer && viewer.remarks && typeof viewer.remarks === 'object'
+            ? viewer.remarks : {};
+        const files = await fsp.readdir(GROUPS);
+        const found = new Map();
+        for (const f of files) {
+            if (!/^\d{6,8}\.json$/.test(f)) continue;
+            const g = await readJson(path.join(GROUPS, f), () => null);
+            if (!g || !Array.isArray(g.members) || !g.members.some((m) => m.userId === userId)) continue;
+            for (const member of g.members) {
+                const u = byId.get(member.userId);
+                if (!u) continue;
+                const selfRemark = g.selfRemarks && typeof g.selfRemarks === 'object'
+                    ? g.selfRemarks[u.id] : '';
+                const matches = wantedIds.size ? wantedIds.has(u.id) :
+                    matchesSearchName(u.nickname, q) ||
+                    matchesSearchName(viewerRemarks[u.id], q) ||
+                    matchesSearchName(selfRemark, q);
+                if (!matches) continue;
+                let item = found.get(u.id);
+                if (!item) {
+                    item = { id: u.id, nickname: u.nickname, groups: [], selfRemarks: [] };
+                    found.set(u.id, item);
+                }
+                item.groups.push({ code: g.code, name: g.name });
+                if (selfRemark && !item.selfRemarks.includes(selfRemark)) item.selfRemarks.push(selfRemark);
+            }
+        }
+        return [...found.values()].sort((a, b) => a.nickname.localeCompare(b.nickname, 'zh'));
     }
 
     // -------------------------------------------------- 清理
@@ -1970,6 +2073,7 @@ function createStore(dataDir, options) {
         transferOwnership,
         groupDetail,
         listGroupsForUser,
+        searchGroupMembers,
         // 活跃度：记账（同步、只在内存里）/ 落盘 / 读窗口。口径见 shared/stats.js
         stats
     };

@@ -162,7 +162,22 @@
 <!-- ==================================================== 首页 -->
 <section class="screen" id="screen-home">
     <div class="card">
-        <h2>我的群组</h2>
+        <h2>搜索群成员</h2>
+        <input class="input" id="cross-member-search" placeholder="搜索昵称、备注或首字母（仅限我加入的群）">
+        <div class="list" id="cross-member-results" hidden></div>
+    </div>
+    <div class="card" id="home-recent-card" hidden>
+        <h2>最近常看</h2>
+        <div class="recent-strip" id="home-recent"></div>
+    </div>
+    <div class="card">
+        <div class="home-groups-head">
+            <h2>我的群组</h2>
+            <div class="home-groups-actions">
+                <button class="btn ghost small" id="btn-create-group" type="button">+ 创建</button>
+                <button class="btn small" id="btn-join-group" type="button">加入</button>
+            </div>
+        </div>
         <div class="list" id="home-groups"><div class="empty">还没有加入任何群组</div></div>
     </div>
 
@@ -177,14 +192,6 @@
             课表用于与其他成员比对。
         </p>
         <button class="link-btn center js-ics-help" id="btn-ics-help">第一次用？看看怎么导出 .ics</button>
-    </div>
-
-    <div class="card">
-        <h2>创建 / 加入群组</h2>
-        <div class="stack">
-            <button class="btn btn-ico" id="btn-create-group"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-plus"></use></svg>创建群组</button>
-            <button class="btn secondary" id="btn-join-group">用邀请码加入群组</button>
-        </div>
     </div>
 
     <div class="card">
@@ -377,7 +384,7 @@
         <div class="weeks" id="group-weeks"></div>
         <p class="tiny week-note">调休补课、考试等日期照常显示。</p>
         <div class="notice" id="group-notice" hidden></div>
-        <div class="list" id="group-members"><div class="spinner">加载中…</div></div>
+        <div id="group-members"><div class="list member-result-list"><div class="spinner">加载中…</div></div></div>
     </div>
 
     <div class="card" id="group-requests-card" hidden>

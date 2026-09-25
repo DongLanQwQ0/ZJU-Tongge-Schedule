@@ -923,6 +923,192 @@ test('首页群组列表 -> 群组页 -> 比对页，一路点得通', async () 
     assert.match(a.el('#compare-stats').textContent, /第 \d+ 周/);
 });
 
+test('首页成员搜索：停止输入两秒后才保存完整搜索词', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '延迟历史群' } });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
+
+    const a = await started(base, { token: owner.token });
+    const input = a.el('#cross-member-search');
+    input.value = mate.nickname;
+    input.dispatch('input', {});
+
+    assert.equal(a.storage.getItem('dsh_member_search_history'), null, '输入时不应立刻写入历史');
+    await tick(1850);
+    assert.equal(a.storage.getItem('dsh_member_search_history'), null, '未满两秒仍不应保存');
+    await tick(250);
+    assert.deepEqual(JSON.parse(a.storage.getItem('dsh_member_search_history')), [mate.nickname]);
+});
+
+test('首页成员搜索：点击结果立即保存当前搜索词', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '点击历史群' } });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
+
+    const a = await started(base, { token: owner.token });
+    const input = a.el('#cross-member-search');
+    input.value = mate.nickname;
+    input.dispatch('input', {});
+    assert.equal(await until(() => a.el('#cross-member-results [data-cross-id]')), true);
+    assert.equal(a.storage.getItem('dsh_member_search_history'), null, '点击前尚未到两秒，不应保存');
+
+    a.click('#cross-member-results [data-cross-id]');
+    assert.deepEqual(JSON.parse(a.storage.getItem('dsh_member_search_history')), [mate.nickname]);
+    assert.equal(await until(() => a.activeScreen() === 'compare'), true,
+        '等待点击后的导航结束，避免异步请求残留到下一条测试');
+});
+
+test('首页成员搜索：清空输入会取消待保存的搜索词', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '取消历史群' } });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
+
+    const a = await started(base, { token: owner.token });
+    const input = a.el('#cross-member-search');
+    input.value = mate.nickname;
+    input.dispatch('input', {});
+    assert.equal(await until(() => a.el('#cross-member-results [data-cross-id]')), true);
+    input.value = '';
+    input.dispatch('input', {});
+
+    await tick(2100);
+    assert.equal(a.storage.getItem('dsh_member_search_history'), null);
+});
+
+test('首页成员搜索：可用私人备注的拼音首字母找到成员', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '首页备注搜索群' } });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
+    await raw(`/api/me/remarks/${mate.id}`, {
+        method: 'PUT', token: owner.token, body: { remark: '木棉' }
+    });
+
+    const a = await started(base, { token: owner.token });
+    const input = a.el('#cross-member-search');
+    assert.match(input.getAttribute('placeholder'), /备注.*首字母/,
+        '主页提示应明确备注与首字母都能搜索');
+    input.value = 'mm';
+    input.dispatch('input', {});
+
+    assert.equal(await until(() => a.el(`#cross-member-results [data-cross-id="${mate.id}"]`), 1000), true,
+        '私人备注“木棉”应能用 mm 找到对应成员');
+});
+
+test('群组页：成员搜索框位于列表裁切层之外', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '搜索框边框群' } });
+    await raw(`/api/groups/${await liveTicket(g.body.code, owner.token)}/join`, {
+        method: 'POST', token: mate.token, body: {}
+    });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    assert.equal(await until(() => a.el('#group-members .member-search-input')), true);
+
+    const root = a.el('#group-members');
+    const search = a.el('#group-members .member-search');
+    const clippedRows = a.el('#group-members .member-result-list');
+    assert.equal(root.classList.contains('list'), false, '外层不能再裁切搜索框的焦点边框');
+    assert.ok(clippedRows && clippedRows.classList.contains('list'), '成员行仍应由独立列表保留圆角裁切');
+    assert.equal(search.parentNode, root);
+    assert.equal(clippedRows.parentNode, root);
+    assert.ok(clippedRows.children[0].classList.contains('item'), '成员行应渲染在独立列表内');
+});
+
+test('群内搜索：输入时不重建列表，点击搜索后才筛选', async () => {
+    const owner = await user(true);
+    const mate1 = await user(true);
+    const mate2 = await user(true);
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '搜索群' } });
+    const ticket = await liveTicket(g.body.code, owner.token);
+    await raw(`/api/groups/${ticket}/join`, { method: 'POST', token: mate1.token, body: {} });
+    await raw(`/api/groups/${ticket}/join`, { method: 'POST', token: mate2.token, body: {} });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    assert.equal(await until(() => a.all('#group-members .item[data-member]').length === 2), true);
+
+    const input = a.el('#group-members .member-search-input');
+    input.value = mate1.nickname;
+    input.dispatch('input', {});
+    await tick(50);
+    assert.equal(a.el('#group-members .member-search-input'), input, '输入时应保留原输入框及焦点');
+    assert.equal(a.all('#group-members .item[data-member]').length, 2, '未点击搜索时列表不应变化');
+
+    a.click('#group-members .member-search-submit');
+    assert.equal(await until(() => a.all('#group-members .item[data-member]').length === 1), true);
+    assert.ok(a.el('#group-members').textContent.includes(mate1.nickname));
+    assert.equal(a.el('#group-members').textContent.includes(mate2.nickname), false);
+
+    const filteredInput = a.el('#group-members .member-search-input');
+    filteredInput.value = '';
+    a.click('#group-members .member-search-submit');
+    assert.equal(await until(() => a.all('#group-members .item[data-member]').length === 2), true,
+        '清空后点击搜索应恢复完整列表');
+
+    const restoredInput = a.el('#group-members .member-search-input');
+    restoredInput.dispatch('focus', {});
+    assert.equal(a.el('#group-members .member-search-history').hidden, false);
+    a.click('#group-members [data-search-history]');
+    assert.equal(await until(() => a.all('#group-members .item[data-member]').length === 1), true,
+        '点击搜索历史应直接搜索');
+
+    const historyInput = a.el('#group-members .member-search-input');
+    historyInput.value = '';
+    historyInput.dispatch('keydown', { key: 'Enter' });
+    assert.equal(await until(() => a.all('#group-members .item[data-member]').length === 2), true,
+        '按回车应与点击搜索按钮一致');
+});
+
+test('群内搜索：新增私人备注后不复用旧的空结果', async () => {
+    const owner = await user();
+    const mate = await user();
+    const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '备注搜索群' } });
+    const ticket = await liveTicket(g.body.code, owner.token);
+    await raw(`/api/groups/${ticket}/join`, { method: 'POST', token: mate.token, body: {} });
+
+    const a = await started(base, { token: owner.token });
+    a.click(a.all('#home-groups .item')[0]);
+    assert.equal(await until(() => a.all('#group-members [data-note]').length === 1), true);
+
+    const search = (term) => {
+        a.el('#group-members .member-search-input').value = term;
+        a.click('#group-members .member-search-submit');
+    };
+    search('午间搭档');
+    assert.equal(await until(() => a.el('#group-members .member-search-input') &&
+        a.all('#group-members [data-note]').length === 0), true);
+    search('');
+    assert.equal(await until(() => a.all('#group-members [data-note]').length === 1), true);
+
+    a.click('#group-members [data-note]');
+    await tick(50);
+    const box = modalWith(a, '[data-x="ok"]');
+    const input = box.querySelector('input');
+    input.value = '午间搭档';
+    input.dispatch('input', {});
+    a.click(box.querySelector('[data-x="ok"]'));
+    assert.equal(await until(() => a.el('#group-members').textContent.includes('午间搭档')), true);
+
+    search('午间搭档');
+    assert.equal(await until(() => a.all('#group-members [data-note]').length === 1, 1200), true,
+        '备注修改后应从服务端重新筛选，而非使用之前缓存的空结果');
+    assert.match(a.el('#group-members .member-search-input').getAttribute('placeholder'), /备注.*首字母/);
+});
+
 test('群组页：邀请码、二维码、周次胶囊都渲染出来', async () => {
     const owner = await user(true);
     const g = await raw('/api/groups', { method: 'POST', token: owner.token, body: { name: '渲染群' } });

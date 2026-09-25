@@ -772,6 +772,19 @@ async function createServer(options = {}) {
             return { groups: await store.listGroupsForUser(user.id) };
         }],
 
+        ['GET', /^\/api\/me\/members\/search$/, async (req) => {
+            const { user } = await requireUser(req);
+            const u = new URL(req.url, 'http://localhost');
+            return { members: await store.searchGroupMembers(user.id, u.searchParams.get('q') || '') };
+        }],
+
+        ['GET', /^\/api\/me\/members\/lookup$/, async (req) => {
+            const { user } = await requireUser(req);
+            const u = new URL(req.url, 'http://localhost');
+            const ids = u.searchParams.getAll('id').slice(0, 5);
+            return { members: await store.searchGroupMembers(user.id, '', ids) };
+        }],
+
         // ---- 群组
         ['POST', /^\/api\/groups$/, async (req, res) => {
             const { user } = await requireUser(req);
@@ -795,8 +808,19 @@ async function createServer(options = {}) {
 
         ['GET', /^\/api\/groups\/(\d{6}|\d{8})$/, async (req, res, m) => {
             const { user } = await requireUser(req);
-            const detail = await store.groupDetail(validateCode(m[1]), user.id);
-            const isMember = detail.members.some((x) => x.id === user.id);
+            const u = new URL(req.url, 'http://localhost');
+            let viewCounts = {};
+            let viewRecency = {};
+            try { viewCounts = JSON.parse(u.searchParams.get('viewCounts') || '{}'); } catch (_) { viewCounts = {}; }
+            try { viewRecency = JSON.parse(u.searchParams.get('viewRecency') || '{}'); } catch (_) { viewRecency = {}; }
+            const detail = await store.groupDetail(validateCode(m[1]), user.id, {
+                page: u.searchParams.get('page'),
+                pageSize: u.searchParams.get('pageSize'),
+                q: u.searchParams.get('q') || '',
+                viewCounts,
+                viewRecency
+            });
+            const isMember = detail.self && detail.self.id === user.id;
             if (!isMember) throw fail(403, '你还没有加入这个群组');
             return detail;
         }],

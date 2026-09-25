@@ -247,8 +247,131 @@
         screen: null,
         // 当前邀请卡片里展示的是哪一枚票。null = 按「最新一枚还能用的」自动挑
         activeInvite: null,
-        newInviteTtl: 'never'
+        newInviteTtl: 'never',
+        adminPages: { users: 1, groups: 1, dormant: 1, suspects: 1 },
+        homeGroupsPage: 1,
+        requestPage: 1,
+        invitePages: { active: 1, dead: 1 }
+        ,memberPage: 1
+        ,memberSearch: ''
+        ,memberViewCounts: {}
+        ,memberViewRecency: {}
+        ,memberCache: Object.create(null)
     };
+
+    function pageSlice(items, page, size) {
+        var totalPages = Math.max(1, Math.ceil(items.length / size));
+        var p = Math.min(Math.max(1, page || 1), totalPages);
+        return { items: items.slice((p - 1) * size, p * size), page: p, totalPages: totalPages };
+    }
+
+    function pagerHtml(key, page, totalPages) {
+        if (totalPages <= 1) return '';
+        return '<div class="pager" data-pager="' + key + '">' +
+            '<button class="btn ghost small" data-page="prev" ' + (page <= 1 ? 'disabled' : '') + '>上一页</button>' +
+            '<span>' + page + '/' + totalPages + '</span>' +
+            '<button class="btn ghost small" data-page="next" ' + (page >= totalPages ? 'disabled' : '') + '>下一页</button>' +
+            '</div>';
+    }
+
+    var RECENT_KEY = 'dsh_recent_views';
+    var SEARCH_KEY = 'dsh_member_search_history';
+    var SEARCH_HISTORY_DELAY_MS = 2000;
+    var recentRenderVersion = 0;
+    function searchHistory() {
+        try { var v = JSON.parse(localStorage.getItem(SEARCH_KEY) || '[]'); return Array.isArray(v) ? v : []; }
+        catch (e) { return []; }
+    }
+    function rememberSearch(value) {
+        var q = String(value || '').trim();
+        if (!q) return;
+        var list = searchHistory().filter(function (x) { return x !== q; });
+        list.unshift(q);
+        try { localStorage.setItem(SEARCH_KEY, JSON.stringify(list.slice(0, 10))); } catch (e) {}
+    }
+    function searchHistoryHtml() {
+        return searchHistory().map(function (q) {
+            return '<button class="btn ghost small" type="button" data-search-history="' + esc(q) + '">' + esc(q) + '</button>';
+        }).join('');
+    }
+    function recentViews() {
+        try { var v = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); return Array.isArray(v) ? v : []; }
+        catch (e) { return []; }
+    }
+    function viewCountsForGroup(code) {
+        var counts = {};
+        recentViews().slice(0, 200).forEach(function (r) {
+            if (r.groupCode === code) counts[r.id] = (counts[r.id] || 0) + 1;
+        });
+        return counts;
+    }
+    function viewRecencyForGroup(code) {
+        var latest = {};
+        recentViews().slice(0, 200).forEach(function (r) {
+            if (r.groupCode === code && latest[r.id] == null) latest[r.id] = r.at;
+        });
+        return latest;
+    }
+    function recordRecentView(member) {
+        if (!state.group || !member) return;
+        var list = recentViews();
+        list.unshift({ id: member.id, nickname: member.nickname, groupCode: state.group.code,
+            groupName: state.group.name, selfRemark: member.selfRemark || '', at: Date.now() });
+        try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 200))); } catch (e) {}
+    }
+    function renderRecentViews() {
+        var card = $('#home-recent-card');
+        var box = $('#home-recent');
+        if (!card || !box) return;
+        var renderVersion = ++recentRenderVersion;
+        if (!box._wheelBound) {
+            box._wheelBound = true;
+            box.addEventListener('wheel', function (e) {
+                if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+                if (box.scrollWidth <= box.clientWidth) return;
+                e.preventDefault();
+                box.scrollLeft += e.deltaY;
+            }, { passive: false });
+        }
+        var counts = Object.create(null), latest = Object.create(null);
+        recentViews().slice(0, 100).forEach(function (r) {
+            counts[r.id] = (counts[r.id] || 0) + 1;
+            if (!latest[r.id]) latest[r.id] = r;
+        });
+        var rows = Object.keys(counts).map(function (id) { return { r: latest[id], n: counts[id] }; })
+            .sort(function (a, b) { return b.n - a.n || b.r.at - a.r.at; }).slice(0, 5);
+        card.hidden = !rows.length;
+        box.innerHTML = rows.map(function (x) {
+            var mine = (state.me && state.me.remarks && state.me.remarks[x.r.id]) || '';
+            return '<button class="item" data-recent-id="' + esc(x.r.id) + '" data-recent-name="' + esc(x.r.nickname) + '" data-recent-group="' + esc(x.r.groupCode) + '">' +
+                '<div class="grow"><div class="title">' + esc(mine || x.r.selfRemark || x.r.nickname) + '</div>' +
+                '<div class="sub">' + esc(x.r.groupName) + '</div></div>' + icon('chevron-right', 'chev') + '</button>';
+        }).join('');
+        $$('#home-recent .item').forEach(function (el) {
+            el.addEventListener('click', async function () {
+                state.memberSearch = el.getAttribute('data-recent-name') || '';
+                state.memberPage = 1;
+                await openGroup(el.getAttribute('data-recent-group'));
+                var id = el.getAttribute('data-recent-id');
+                var m = state.group && state.group.members.filter(function (x) { return x.id === id; })[0];
+                if (m) openCompare(m); else toast('这个成员当前不在已加载的成员页中', true);
+            });
+        });
+        if (!rows.length) return;
+        API.lookupMembers(rows.map(function (x) { return x.r.id; })).then(function (result) {
+            if (renderVersion !== recentRenderVersion) return;
+            var found = Object.create(null);
+            (result.members || []).forEach(function (m) { found[m.id] = m; });
+            $$('#home-recent .item').forEach(function (el) {
+                var id = el.getAttribute('data-recent-id');
+                var member = found[id];
+                if (!member) return;
+                var mine = (state.me && state.me.remarks && state.me.remarks[id]) || '';
+                $('.title', el).textContent = mine || (member.selfRemarks || [])[0] || member.nickname;
+                el.setAttribute('data-recent-name', member.nickname);
+            });
+        }).catch(function () {});
+    }
 
     function qs(name) {
         var m = new RegExp('[?&]' + name + '=([^&#]*)').exec(location.search);
@@ -359,7 +482,7 @@
             return fallbackHome();
         }
         if (id === 'group') {
-            if (state.group) return openGroup(state.group.code);
+            if (state.group) return returnToCachedGroup();
             return fallbackHome();
         }
         if (id === 'invites') {
@@ -619,6 +742,7 @@
     async function goHome(opts) {
         show('home', { title: '同格', replace: opts && opts.replace });
         renderCourseStatus();
+        renderRecentViews();
         await loadGroups();
     }
 
@@ -798,6 +922,7 @@
     /** 进页面和点「清空筛选」都走这里：筛选是临时的查看动作，不是配置 */
     function resetAdminFilter() {
         adminFilter = defaultAdminFilter();
+        state.adminPages.users = state.adminPages.groups = state.adminPages.dormant = state.adminPages.suspects = 1;
         $('#admin-user-filter').value = '';
         $('#admin-sort').value = adminFilter.sort;
         $('#admin-sort-dir').innerHTML = sortDirHtml(adminFilter.dir);
@@ -899,8 +1024,10 @@
         renderAdminUsers();
         renderAdminSubsets();
 
+        var groupsPage = pageSlice(a.groups, state.adminPages.groups, 20);
+        state.adminPages.groups = groupsPage.page;
         $('#admin-groups').innerHTML = a.groups.length
-            ? a.groups.map(adminGroupRow).join('')
+            ? groupsPage.items.map(adminGroupRow).join('') + pagerHtml('admin-groups', groupsPage.page, groupsPage.totalPages)
             : '<div class="empty">一个群组都没有</div>';
 
         $('#admin-audit').innerHTML = a.audit.length
@@ -925,8 +1052,10 @@
     function renderAdminUsers() {
         var all = (state.admin && state.admin.users) || [];
         var users = filterAdminUsers(all);
+        var page = pageSlice(users, state.adminPages.users, 20);
+        state.adminPages.users = page.page;
         $('#admin-users').innerHTML = users.length
-            ? users.map(adminUserRow).join('')
+            ? page.items.map(adminUserRow).join('') + pagerHtml('admin-users', page.page, page.totalPages)
             : '<div class="empty">没有匹配的账号</div>';
         $('#admin-user-count').textContent = accountCountText(users.length, all.length);
         setAdminListAnim();
@@ -947,10 +1076,12 @@
         // 待清理：只列出来给人看，不自动删 —— 到底是不是废号，人和人之间的
         // 情况只有群主知道（有人就是注册了先放着，开学才传课表）
         var dorm = users.filter(function (u) { return u.dormant; });
+        var dormPage = pageSlice(dorm, state.adminPages.dormant, 20);
+        state.adminPages.dormant = dormPage.page;
         $('#admin-dormant-card').hidden = !a.stats.dormantCount;
         $('#admin-dormant-count').textContent = subsetCountText(dorm.length, a.stats.dormantCount);
         $('#admin-dormant').innerHTML = dorm.length
-            ? dorm.map(function (u) {
+            ? dormPage.items.map(function (u) {
                 return '<div class="item admin-row"><div class="grow">' +
                     '<div class="title">' + esc(u.nickname) + '</div>' +
                     '<div class="sub">' + u.idleDays + ' 天没露面 · 注册 ' + fmtTime(u.regAt) +
@@ -960,22 +1091,24 @@
                     '</div><div class="row-acts">' +
                     '<button class="row-remove" data-deluser="' + esc(u.id) + '">删除</button>' +
                     '</div></div>';
-            }).join('')
+            }).join('') + pagerHtml('admin-dormant', dormPage.page, dormPage.totalPages)
             : '<div class="empty">当前筛选下没有待清理的账号</div>';
 
         // 异常注册从 users 里派生，而不是用 a.suspects —— listSuspects() 返回的是
         // 精简副本（只有昵称/IP/原因，没有 id、idleDays、courseCount），根本没法参与筛选。
         // users[] 里本来就有 suspect + suspectReason，判定条件（u.suspect）完全一样。
         var suspects = users.filter(function (u) { return u.suspect; });
+        var suspectPage = pageSlice(suspects, state.adminPages.suspects, 20);
+        state.adminPages.suspects = suspectPage.page;
         $('#admin-suspect-card').hidden = !a.stats.suspectCount;
         $('#admin-suspect-count').textContent = subsetCountText(suspects.length, a.stats.suspectCount);
         $('#admin-suspects').innerHTML = suspects.length
-            ? suspects.map(function (s) {
+            ? suspectPage.items.map(function (s) {
                 return '<div class="item admin-row"><div class="grow">' +
                     '<div class="title">' + esc(s.nickname) + '</div>' +
                     '<div class="sub">' + esc(s.regIp || '（未记录）') + ' · ' +
                     esc(s.suspectReason || '同 IP 集中注册') + ' · ' + fmtTime(s.regAt) + '</div></div></div>';
-            }).join('')
+            }).join('') + pagerHtml('admin-suspects', suspectPage.page, suspectPage.totalPages)
             : '<div class="empty">当前筛选下没有待复核的账号</div>';
     }
 
@@ -986,6 +1119,7 @@
      * 审计日志再排一次 —— 每敲一个字都滚一次数字，纯属干扰。
      */
     function applyAdminFilter() {
+        state.adminPages.users = state.adminPages.dormant = state.adminPages.suspects = 1;
         renderAdminUsers();
         renderAdminSubsets();
     }
@@ -1059,6 +1193,12 @@
      */
     function initAdminDelegates() {
         $('#admin-users').addEventListener('click', function (e) {
+            var pageButton = e.target.closest('[data-pager] button[data-page]');
+            if (pageButton && !pageButton.disabled) {
+                state.adminPages.users += pageButton.getAttribute('data-page') === 'next' ? 1 : -1;
+                renderAdminUsers();
+                return;
+            }
             var t = e.target.closest('[data-grant],[data-reset],[data-deluser]');
             if (!t) return;
             if (t.hasAttribute('data-grant')) return toggleAdmin(t.getAttribute('data-grant'));
@@ -1066,8 +1206,25 @@
             return adminDeleteUser(t.getAttribute('data-deluser'));
         });
         $('#admin-groups').addEventListener('click', function (e) {
+            var pageButton = e.target.closest('[data-pager] button[data-page]');
+            if (pageButton && !pageButton.disabled) {
+                state.adminPages.groups += pageButton.getAttribute('data-page') === 'next' ? 1 : -1;
+                renderAdmin();
+                return;
+            }
             var t = e.target.closest('[data-delgroup]');
             if (t) adminDeleteGroup(t.getAttribute('data-delgroup'));
+        });
+        ['admin-dormant', 'admin-suspects'].forEach(function (key) {
+            $('#' + key).addEventListener('click', function (e) {
+                var b = e.target.closest('[data-pager] button[data-page]');
+                if (!b || b.disabled) return;
+                var name = { 'admin-users':'users', 'admin-groups':'groups', 'admin-dormant':'dormant', 'admin-suspects':'suspects' }[key];
+                state.adminPages[name] += b.getAttribute('data-page') === 'next' ? 1 : -1;
+                if (key === 'admin-users') renderAdminUsers();
+                else if (key === 'admin-groups') renderAdmin();
+                else renderAdminSubsets();
+            });
         });
     }
 
@@ -1241,7 +1398,9 @@
             box.innerHTML = '<div class="empty">还没有加入任何群组</div>';
             return;
         }
-        box.innerHTML = state.groups.map(function (g) {
+        var groupPage = pageSlice(state.groups, state.homeGroupsPage, 5);
+        state.homeGroupsPage = groupPage.page;
+        box.innerHTML = groupPage.items.map(function (g) {
             // 卡片上印的是**一枚能用的票**（服务端算好的 shareCode），不是群码 ——
             // 群码已经不能用来入群了（它是群的地址），印出来等于让人去复制一段
             // 打不开的链接。成员分享被关掉、或者一枚票都没有时，shareCode 就是 null，
@@ -1254,10 +1413,19 @@
                 g.memberCount + ' 人' +
                 (g.isCreator ? ' · 你是群主' : '') + '</div></div>' +
                 icon('chevron-right', 'chev') + '</button>';
-        }).join('');
+        }).join('') + pagerHtml('home-groups', groupPage.page, groupPage.totalPages);
         $$('#home-groups .item').forEach(function (el) {
             el.addEventListener('click', function () { openGroup(el.getAttribute('data-code')); });
         });
+        if (!box._pagerBound) {
+            box._pagerBound = true;
+            box.addEventListener('click', function (e) {
+                var b = e.target.closest('[data-pager] button[data-page]');
+                if (!b || b.disabled) return;
+                state.homeGroupsPage += b.getAttribute('data-page') === 'next' ? 1 : -1;
+                loadGroups();
+            });
+        }
     }
 
     /** 注销账号：连着两道提醒 —— 先把后果摆清楚，再要一次密码 */
@@ -1689,10 +1857,36 @@
     // ------------------------------------------------------------ 群组页
 
     async function openGroup(code, keepSilent) {
+        if (!keepSilent) {
+            state.requestPage = 1;
+            state.memberPage = 1;
+            state.memberSearch = '';
+            state.memberViewCounts = viewCountsForGroup(code);
+            state.memberViewRecency = viewRecencyForGroup(code);
+        }
         if (!keepSilent) show('group', { title: '群组', back: goHome });
         $('#group-members').innerHTML = '<div class="spinner">加载中…</div>';
         try {
-            var detail = await API.groupDetail(code);
+            var query = {
+                page: state.memberPage,
+                pageSize: 20,
+                q: state.memberSearch,
+                viewCounts: state.memberViewCounts,
+                viewRecency: state.memberViewRecency
+            };
+            var cacheKey = code + '|' + query.page + '|' + query.q + '|' + JSON.stringify(query.viewCounts) + '|' + JSON.stringify(query.viewRecency);
+            var cached = state.memberCache[cacheKey];
+            var detail;
+            if (cached && cached.data && Date.now() - cached.at < 15000) {
+                detail = cached.data;
+            } else if (cached && cached.promise) {
+                detail = await cached.promise;
+            } else {
+                var promise = API.groupDetail(code, query);
+                state.memberCache[cacheKey] = { promise: promise, at: Date.now() };
+                detail = await promise;
+                state.memberCache[cacheKey] = { data: detail, at: Date.now() };
+            }
             state.group = detail;
             renderGroup();
         } catch (e) {
@@ -1701,13 +1895,31 @@
         }
     }
 
+    function returnToCachedGroup() {
+        if (!state.group) return fallbackHome();
+        var y = state.groupScrollY || 0;
+        show('group', { title: '群组', back: goHome, replace: true });
+        renderGroup();
+        // 等待屏幕切换和成员 DOM 完成布局后再恢复，避免被动态列表重定位覆盖。
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () { window.scrollTo(0, y); });
+        });
+    }
+
     /**
      * 只把群组数据重新拉一遍再重画，不走 show()。
      * 新增/作废邀请码后用这个：不闪屏、不重置已选周次，用户感觉是「就地更新」。
      */
     async function reloadGroup() {
         if (!state.group) return;
-        state.group = await API.groupDetail(state.group.code);
+        Object.keys(state.memberCache).forEach(function (key) {
+            if (key.indexOf(state.group.code + '|') === 0) delete state.memberCache[key];
+        });
+        state.group = await API.groupDetail(state.group.code, {
+            page: state.memberPage, pageSize: 20, q: state.memberSearch,
+            viewCounts: state.memberViewCounts,
+            viewRecency: state.memberViewRecency
+        });
         renderGroup();
     }
 
@@ -1768,7 +1980,7 @@
         try {
             var r = await API.setRemark(m.id, name);
             state.me.remarks = r.remarks || {};
-            renderGroup();
+            await reloadGroup();
             toast(name ? '以后 TA 在你这里叫「' + name + '」' : '已取消备注');
         } catch (e) { toast(e.message, true); }
     }
@@ -1795,7 +2007,8 @@
         try {
             var r = await API.setSelfRemark(state.group.code, name);
             if (me) me.selfRemark = r.selfRemark || '';
-            renderGroup();
+            if (state.group.self) state.group.self.selfRemark = r.selfRemark || '';
+            await reloadGroup();
             toast(name ? '这群里你会显示为「' + name + '」' : '已恢复用昵称');
         } catch (e) { toast(e.message, true); }
     }
@@ -1839,11 +2052,11 @@
 
     function renderGroup() {
         var g = state.group;
+        var me = g.self || g.members.filter(memberHasMe)[0];
         var all = g.members.map(function (m) { return m.courses || []; });
-        var win = buildWindow(all);
-        var me = g.members.filter(memberHasMe)[0];
+        var win = g.semesterWindow || buildWindow(all);
         var iAmOwner = !!(state.me && g.creatorId === state.me.id);
-        var meHasCourses = !!(me && me.courses.length);
+        var meHasCourses = !!(me && (me.courses || []).length);
 
         if (state.weekIndex == null || state.weekIndex > win.weekCount) {
             var def = weeks.resolveDefaultWeek(all, win);
@@ -1979,7 +2192,47 @@
             html.push(memberRowHtml(d.m, d.stats, iAmOwner));
         });
 
-        $('#group-members').innerHTML = html.join('');
+        var memberPager = pagerHtml('group-members', g.memberPage || 1, g.memberTotalPages || 1);
+        var search = '<div class="member-search"><div class="member-search-row">' +
+            '<input class="input member-search-input" value="' + esc(state.memberSearch) + '" placeholder="按昵称、备注或拼音首字母搜索">' +
+            '<button class="btn small member-search-submit" type="button">搜索</button></div>' +
+            '<div class="search-history member-search-history" hidden>' + searchHistoryHtml() + '</div></div>';
+        $('#group-members').innerHTML = search +
+            '<div class="list member-result-list">' + html.join('') + '</div>' + memberPager;
+        var searchInput = $('.member-search-input', $('#group-members'));
+        var searchButton = $('.member-search-submit', $('#group-members'));
+        var historyBox = $('.member-search-history', $('#group-members'));
+        function submitMemberSearch(value) {
+            var q = String(value || '').trim();
+            searchInput.value = q;
+            historyBox.hidden = true;
+            if (q === state.memberSearch) return;
+            state.memberSearch = q;
+            state.memberPage = 1;
+            rememberSearch(q);
+            openGroup(g.code, true);
+        }
+        searchInput.addEventListener('focus', function () {
+            historyBox.innerHTML = searchHistoryHtml();
+            historyBox.hidden = !historyBox.children.length;
+        });
+        searchInput.addEventListener('keydown', function (e) {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            submitMemberSearch(searchInput.value);
+        });
+        searchButton.addEventListener('click', function () { submitMemberSearch(searchInput.value); });
+        historyBox.addEventListener('click', function (e) {
+            var b = e.target.closest('[data-search-history]');
+            if (!b) return;
+            submitMemberSearch(b.getAttribute('data-search-history'));
+        });
+        $('#group-members').onclick = function (e) {
+            var b = e.target.closest('[data-pager] button[data-page]');
+            if (!b || b.disabled) return;
+            state.memberPage += b.getAttribute('data-page') === 'next' ? 1 : -1;
+            openGroup(g.code, true);
+        };
 
         $$('#group-members .item[data-member]').forEach(function (el) {
             function open() {
@@ -2043,13 +2296,15 @@
         if (card.hidden) return;
 
         $('#group-requests-count').textContent = list.length + ' 个';
-        $('#group-requests').innerHTML = list.map(function (r) {
+        var page = pageSlice(list, state.requestPage, 15);
+        state.requestPage = page.page;
+        $('#group-requests').innerHTML = page.items.map(function (r) {
             return '<div class="item"><div class="grow">' +
                 '<div class="title">' + esc(r.nickname) + '</div>' +
                 '<div class="sub">' + fmtTime(r.at) + ' 申请</div></div>' +
                 '<button class="row-ok" data-ok="' + esc(r.id) + '">同意</button>' +
                 '<button class="row-no" data-no="' + esc(r.id) + '">拒绝</button></div>';
-        }).join('');
+        }).join('') + pagerHtml('group-requests', page.page, page.totalPages);
 
         $$('#group-requests .row-ok').forEach(function (b) {
             b.addEventListener('click', function () { decideRequest(b.getAttribute('data-ok'), true); });
@@ -2057,6 +2312,12 @@
         $$('#group-requests .row-no').forEach(function (b) {
             b.addEventListener('click', function () { decideRequest(b.getAttribute('data-no'), false); });
         });
+        $('#group-requests').onclick = function (e) {
+            var b = e.target.closest('[data-pager] button[data-page]');
+            if (!b || b.disabled) return;
+            state.requestPage += b.getAttribute('data-page') === 'next' ? 1 : -1;
+            renderRequests(state.group, true);
+        };
     }
 
     async function decideRequest(id, approve) {
@@ -2446,8 +2707,10 @@
         var countEl = $('#inv-count');
         if (countEl) countEl.textContent = live.length + ' 条';
         var box = $('#inv-active-list');
+        var livePage = pageSlice(live, state.invitePages.active, 15);
+        state.invitePages.active = livePage.page;
         box.innerHTML = live.length
-            ? live.map(function (i) { return inviteRowHtml(i, 'active'); }).join('')
+            ? livePage.items.map(function (i) { return inviteRowHtml(i, 'active'); }).join('') + pagerHtml('inv-active-list', livePage.page, livePage.totalPages)
             : '<div class="empty">还没有有效的邀请链接，下面发一条吧</div>';
 
         // 批量作废那一条只在有多条时才出现，免得零碎
@@ -2462,12 +2725,27 @@
 
         // ---- 已失效存档 ----
         var hbox = $('#inv-history-list');
+        var deadPage = pageSlice(dead, state.invitePages.dead, 15);
+        state.invitePages.dead = deadPage.page;
         hbox.innerHTML = dead.length
-            ? dead.map(function (i) { return inviteRowHtml(i, 'dead'); }).join('')
+            ? deadPage.items.map(function (i) { return inviteRowHtml(i, 'dead'); }).join('') + pagerHtml('inv-history-list', deadPage.page, deadPage.totalPages)
             : '<div class="empty">没有失效的记录</div>';
         $$('#inv-history-list [data-purge]').forEach(function (b) {
             b.addEventListener('click', function () { purgeInvite(b.getAttribute('data-purge')); });
         });
+
+        box.onclick = function (e) {
+            var b = e.target.closest('[data-pager] button[data-page]');
+            if (!b || b.disabled) return;
+            state.invitePages.active += b.getAttribute('data-page') === 'next' ? 1 : -1;
+            renderManageInvites();
+        };
+        hbox.onclick = function (e) {
+            var b = e.target.closest('[data-pager] button[data-page]');
+            if (!b || b.disabled) return;
+            state.invitePages.dead += b.getAttribute('data-page') === 'next' ? 1 : -1;
+            renderManageInvites();
+        };
 
         syncInviteBulk();
     }
@@ -2575,6 +2853,7 @@
     async function openInvites() {
         if (!state.group) return fallbackHome();
         if (!state.group.isCreator) return toast('只有群主能管理邀请链接', true);
+        state.invitePages.active = state.invitePages.dead = 1;
         show('invites', { title: '邀请链接', back: function () { show('group', { title: '群组', back: goHome, replace: true }); } });
         renderManageInvites();
     }
@@ -2829,7 +3108,7 @@
         for (var p = 1; p <= periods.MAX_PERIOD; p++) {
             var info = periods.periodInfo(p);
             html += '<tr><td class="period-col">' + p +
-                '<span class="t">' + info.start + '</span></td>';
+                '<span class="t">' + esc(periods.periodLabel(p)) + '</span></td>';
             for (var d = 1; d <= 7; d++) {
                 var c = cells[d + '-' + p];
                 var inner = '';
@@ -2847,7 +3126,7 @@
         for (var p = 1; p <= periods.MAX_PERIOD; p++) {
             var info = periods.periodInfo(p);
             html += '<tr><td class="period-col">' + p +
-                '<span class="t">' + info.start + '</span></td>';
+                '<span class="t">' + esc(periods.periodLabel(p)) + '</span></td>';
             for (var d = 1; d <= 7; d++) {
                 var c = exportCells[d + '-' + p];
                 var inner = '';
@@ -2867,13 +3146,22 @@
     // ------------------------------------------------------------ 比对页
 
     function openCompare(member) {
+        state.memberViewCounts[member.id] = (state.memberViewCounts[member.id] || 0) + 1;
+        state.memberViewRecency[member.id] = Date.now();
+        recordRecentView(member);
         state.compareWith = member;
-        show('compare', { title: '课表比对', back: function () { openGroup(state.group.code, true); } });
+        if (state.screen !== 'compare') state.groupScrollY = window.scrollY || 0;
+        show('compare', {
+            title: '课表比对',
+            back: function () {
+                returnToCachedGroup();
+            }
+        });
         renderCompare();
     }
 
     function renderCompare() {
-        var me = state.group.members.filter(memberHasMe)[0];
+        var me = state.group.self || state.group.members.filter(memberHasMe)[0];
         var ta = state.compareWith;
         if (!me || !ta) return;
 
@@ -3364,9 +3652,70 @@
         });
     }
 
+    function initCrossMemberSearch() {
+        var input = $('#cross-member-search');
+        var box = $('#cross-member-results');
+        if (!input || !box) return;
+        var historyTimer = null;
+        function cancelHistorySave() {
+            if (historyTimer === null) return;
+            clearTimeout(historyTimer);
+            historyTimer = null;
+        }
+        function scheduleHistorySave(q) {
+            cancelHistorySave();
+            if (!q) return;
+            historyTimer = setTimeout(function () {
+                historyTimer = null;
+                rememberSearch(q);
+            }, SEARCH_HISTORY_DELAY_MS);
+        }
+        function saveHistoryNow(q) {
+            cancelHistorySave();
+            rememberSearch(q);
+        }
+        input.addEventListener('input', async function () {
+            var q = input.value.trim();
+            scheduleHistorySave(q);
+            if (!q) { box.hidden = true; box.innerHTML = ''; return; }
+            try {
+                var result = await API.searchMembers(q);
+                box.innerHTML = (result.members || []).map(function (m) {
+                    var privateRemark = (state.me && state.me.remarks && state.me.remarks[m.id]) || '';
+                    var remarks = privateRemark ? [privateRemark] : (m.selfRemarks || []);
+                    return '<button class="item" data-cross-id="' + esc(m.id) + '" data-cross-name="' + esc(m.nickname) + '">' +
+                        '<div class="grow"><div class="title">' + esc(m.nickname) + '</div>' +
+                        (remarks.length ? '<div class="sub">备注：' + remarks.map(esc).join('、') + '</div>' : '') +
+                        '<div class="sub">共同群组：' + m.groups.map(function (g) { return esc(g.name); }).join('、') + '</div></div>' +
+                        icon('chevron-right', 'chev') + '</button>';
+                }).join('') || '<div class="empty">没有找到成员</div>';
+                box.hidden = false;
+            } catch (e) { box.hidden = false; box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; }
+        });
+        box.addEventListener('click', async function (e) {
+            var row = e.target.closest('[data-cross-id]');
+            if (!row) return;
+            saveHistoryNow(input.value.trim());
+            var id = row.getAttribute('data-cross-id');
+            var name = row.getAttribute('data-cross-name');
+            var recent = recentViews().find(function (r) { return r.id === id; });
+            var result = await API.searchMembers(name);
+            var member = (result.members || []).find(function (m) { return m.id === id; });
+            var group = member && (recent && member.groups.some(function (g) { return g.code === recent.groupCode; })
+                ? recent.groupCode : member.groups[0] && member.groups[0].code);
+            if (!group) return;
+            state.memberSearch = name;
+            state.memberPage = 1;
+            await openGroup(group);
+            var target = state.group && state.group.members.find(function (m) { return m.id === id; });
+            if (target) openCompare(target);
+        });
+    }
+
     async function boot() {
         initAuth();
         initHome();
+        initCrossMemberSearch();
         initGroup();
         initAccount();
         initManageInvites();

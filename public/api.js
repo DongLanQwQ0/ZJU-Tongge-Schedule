@@ -135,6 +135,12 @@
             return request('api/me/password', 'PUT', { oldPassword: oldPassword, newPassword: newPassword });
         },
         myGroups: function () { return request('api/me/groups'); },
+        searchMembers: function (q) { return request('api/me/members/search?q=' + encodeURIComponent(q)); },
+        lookupMembers: function (ids) {
+            return request('api/me/members/lookup?' + ids.map(function (id) {
+                return 'id=' + encodeURIComponent(id);
+            }).join('&'));
+        },
 
         // 管理页（服务端还会再查一次管理员身份，前端藏入口只是不碍眼）
         adminOverview: function () { return request('api/admin/overview'); },
@@ -175,7 +181,17 @@
             return request('api/groups/' + code + '/invites/' + inviteCode + '/purge', 'DELETE', {});
         },
         joinGroup: function (code) { return request('api/groups/' + code + '/join', 'POST', {}); },
-        groupDetail: function (code) { return request('api/groups/' + code); },
+        groupDetail: function (code, opts) {
+            opts = opts || {};
+            var q = new URLSearchParams();
+            if (opts.page != null) q.set('page', opts.page);
+            if (opts.pageSize != null) q.set('pageSize', opts.pageSize);
+            if (opts.q) q.set('q', opts.q);
+            if (opts.viewCounts) q.set('viewCounts', JSON.stringify(opts.viewCounts));
+            if (opts.viewRecency) q.set('viewRecency', JSON.stringify(opts.viewRecency));
+            var suffix = q.toString();
+            return request('api/groups/' + code + (suffix ? '?' + suffix : ''));
+        },
         groupSettings: function (code, patch) { return request('api/groups/' + code + '/settings', 'PUT', patch); },
         // 转让群主：密码是硬要求（服务端校验），不是界面装饰
         transferGroup: function (code, targetId, password) {

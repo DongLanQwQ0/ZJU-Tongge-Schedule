@@ -200,6 +200,10 @@ test('节次换算：区间覆盖口径', () => {
     assert.equal(periods.periodsFromTime('乱', '09:35'), null);
 });
 
+test('节次标签显示完整起止时间', () => {
+    assert.equal(periods.periodLabel(9), '16:15–17:00');
+});
+
 test('课表槽位可安全落盘（长度截断 + 日期去重排序）', () => {
     const stored = ics.toStoredSlots([{
         course: 'x'.repeat(200), day: 1, startPeriod: 1, endPeriod: 2,
