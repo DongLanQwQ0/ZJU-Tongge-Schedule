@@ -31,6 +31,18 @@
 
 首页还有个「本地快速比对」：选两份文件直接在浏览器里比，不发给服务器。
 
+## Android 应用
+
+**同格 · 撞课** 支持 Android 8.0 及以上，提供应用内扫码、课表文件选择、截图保存和跟随系统的明暗主题，需要联网。
+
+首页「本地快速比对」卡片中的 **下载 APK** 打开下载页面，可选择 GitHub 直链、GHFast、GH-Proxy 或 ghproxy.net 下载最新正式版，也可跳转至 Android 与 Web 项目。
+
+- [下载最新 APK](https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule-Android/releases/latest/download/Tongge.apk)
+- [Android 项目](https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule-Android)
+- [Web 项目](https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule)
+
+应用内「检查更新」检测 GitHub 正式 Release。后续 Release 提供固定名称 `Tongge.apk`，下载页面的 `latest/download/Tongge.apk` 链接会随新版自动更新。
+
 ---
 
 ## 图怎么看

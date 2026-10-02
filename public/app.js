@@ -437,6 +437,7 @@
         backTo = opts.back || null;
         $('#topbar-title').textContent = opts.title || '同格';
         $('#topbar-who').textContent = state.me ? state.me.nickname : '';
+        $('#topbar-who').hidden = id === 'android-download';
         $('#btn-logout').hidden = !state.me;
         // 管理入口挂在顶栏上，任何页面都够得着；普通人看不到这个按钮
         $('#btn-admin').hidden = !(state.me && state.me.admin);
@@ -472,6 +473,10 @@
 
     /** 返回手势落下后，按那条历史记录把屏幕重新画出来 */
     function restoreScreen(id) {
+        if (id === 'android-download') {
+            show('android-download', { title: '下载 APK', back: goHome });
+            return;
+        }
         if (id === 'local') {
             show('local', { title: '本地快速比对', back: goHome });
             initLocalOnce();
@@ -1640,6 +1645,9 @@
 
         $('#btn-logout').addEventListener('click', logout);
         $('#btn-local').addEventListener('click', function () { show('local', { title: '本地快速比对', back: goHome }); initLocalOnce(); });
+        $('#btn-android-download').addEventListener('click', function () {
+            show('android-download', { title: '下载 APK', back: goHome });
+        });
         $('#btn-open-admin').addEventListener('click', function () { openAdmin(); });
         $('#btn-admin').addEventListener('click', function () { openAdmin(); });
         $('#btn-admin-stats').addEventListener('click', function () { openStats(); });

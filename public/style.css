@@ -273,6 +273,22 @@ main { max-width: 720px; margin: 0 auto; padding: 14px; }
 .screen { display: none; }
 .screen.active { display: block; }
 
+.local-entry-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.local-entry-actions > .btn { flex: 1 1 140px; text-align: center; text-decoration: none; }
+.apk-app-head { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+.apk-app-head img { flex: 0 0 auto; border-radius: 16px; }
+.apk-app-head h2 { font-size: 19px; margin-bottom: 6px; }
+.apk-sources { display: grid; gap: 8px; }
+.apk-source {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    min-height: 52px; padding: 12px 14px; border: 1px solid var(--line);
+    border-radius: 10px; color: var(--text); text-decoration: none;
+    background: var(--field-bg); font-size: 14px; font-weight: 500;
+}
+.apk-source .ico { color: var(--blue); }
+.apk-source:hover, .apk-source:active { background: var(--fill-active); border-color: var(--blue); }
+.apk-source:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+
 .card {
     background: var(--card);
     border-radius: var(--radius);

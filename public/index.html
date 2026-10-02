@@ -79,6 +79,7 @@
     <symbol id="i-arrow-down-wide-narrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 16l4 4l4-4m-4 4V4m4 0h10M11 8h7m-7 4h4"/></symbol>
     <symbol id="i-arrow-up-narrow-wide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8l4-4l4 4M7 4v16m4-8h4m-4 4h7m-7 4h10"/></symbol>
     <symbol id="i-arrow-left-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3L4 7l4 4M4 7h16m-4 14l4-4l-4-4m4 4H4"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
 </svg>
 
 <header class="topbar" id="topbar" hidden>
@@ -197,7 +198,10 @@
     <div class="card">
         <h2>本地快速比对 <span class="sub">不上传服务器</span></h2>
         <p class="tiny" style="margin-bottom:10px">选两份课表直接比对。</p>
-        <button class="btn ghost" id="btn-local">打开本地比对</button>
+        <div class="local-entry-actions">
+            <button class="btn ghost" id="btn-local">打开本地比对</button>
+            <button class="btn btn-ico" id="btn-android-download" type="button"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-download"></use></svg>下载 APK</button>
+        </div>
     </div>
 
     <div class="card" id="admin-entry-card" hidden>
@@ -530,6 +534,29 @@
         <p class="tiny" style="text-align:center;margin-top:8px">
             导出<b>全学期</b>课表（含单双周），与所选周次无关。
         </p>
+    </div>
+</section>
+
+<!-- ==================================================== Android 下载 -->
+<section class="screen" id="screen-android-download">
+    <div class="card">
+        <div class="apk-app-head">
+            <img src="img/tongge-app-icon.svg" width="64" height="64" alt="同格 · 撞课图标">
+            <div><h2>同格 · 撞课</h2><span class="muted">最新版 · Android 8.0+</span></div>
+        </div>
+        <div class="apk-sources" aria-label="选择 APK 下载源">
+            <a class="apk-source" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule-Android/releases/latest/download/Tongge.apk" target="_blank" rel="noopener noreferrer"><span>GitHub 直链</span><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"></use></svg></a>
+            <a class="apk-source" href="https://ghfast.top/https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule-Android/releases/latest/download/Tongge.apk" target="_blank" rel="noopener noreferrer"><span>GHFast</span><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"></use></svg></a>
+            <a class="apk-source" href="https://gh-proxy.com/https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule-Android/releases/latest/download/Tongge.apk" target="_blank" rel="noopener noreferrer"><span>GH-Proxy</span><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"></use></svg></a>
+            <a class="apk-source" href="https://ghproxy.net/https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule-Android/releases/latest/download/Tongge.apk" target="_blank" rel="noopener noreferrer"><span>ghproxy.net</span><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"></use></svg></a>
+        </div>
+    </div>
+    <div class="card apk-projects">
+        <h2>开源项目</h2>
+        <div class="local-entry-actions">
+            <a class="btn ghost btn-ico" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule-Android" target="_blank" rel="noopener noreferrer"><svg class="ico" aria-hidden="true"><use href="#i-link"></use></svg>Android 项目</a>
+            <a class="btn ghost btn-ico" href="https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule" target="_blank" rel="noopener noreferrer"><svg class="ico" aria-hidden="true"><use href="#i-link"></use></svg>Web 项目</a>
+        </div>
     </div>
 </section>
 
