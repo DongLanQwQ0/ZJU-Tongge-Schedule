@@ -7,7 +7,9 @@
 (function () {
     'use strict';
 
-    var TOKEN_KEY = 'dsh_token';
+    // Android provides its selected deployment URL before this script loads.
+    var serverBase = window.__tonggeServerBase || document.baseURI;
+    var TOKEN_KEY = 'dsh_token' + (window.__tonggeServerBase ? ':' + serverBase : '');
 
     /**
      * localStorage 安全封装。
@@ -60,12 +62,13 @@
     async function request(path, method, body) {
         method = method || 'GET';
         var headers = {};
-        if (token) headers.Authorization = 'Bearer ' + token;
+        var requestToken = token;
+        if (requestToken) headers.Authorization = 'Bearer ' + requestToken;
         if (body !== undefined) headers['Content-Type'] = 'application/json';
 
         var res;
         try {
-            res = await fetch(path, {
+            res = await fetch(new URL(path, serverBase).href, {
                 method: method,
                 headers: headers,
                 body: body === undefined ? undefined : JSON.stringify(body)
@@ -91,7 +94,7 @@
             // 注意别写成 /^\api\/…/：\a 是恒等转义（等价于 a），能跑但看着像笔误，
             // 哪天路径改回 '/api/login' 就会静默失配，401 被误判成「会话过期」。
             var isAuthCall = /^api\/(login|register)$/.test(path);
-            if (res.status === 401 && token && !isAuthCall) {
+            if (res.status === 401 && requestToken && token === requestToken && !isAuthCall) {
                 setToken('');
                 if (onUnauthorized) onUnauthorized(err);
             }
@@ -159,7 +162,9 @@
             return request('api/admin/groups/' + encodeURIComponent(code), 'DELETE', {});
         },
 
-        createGroup: function (name) { return request('api/groups', 'POST', { name: name }); },
+        createGroup: function (name, temporary) {
+            return request('api/groups', 'POST', { name: name, temporary: temporary === true });
+        },
         // 换掉群自己的码（旧链接全部失效）
         // 这里原本有 rotateGroupCode（换群码）。群码不再是票之后它没有用了，
         // 服务端那条路由也已删除 —— 想收回链接就作废那一枚票

@@ -464,6 +464,7 @@ async function createServer(options = {}) {
     const superCount = await store.countSupers();
 
     if (!options.skipCleanup) store.cleanup().catch((e) => console.error('[cleanup]', e.message));
+    await store.expireTemporaryGroups();
 
     // ------------------------------------------------------------ 注册验证码
     //
@@ -606,6 +607,7 @@ async function createServer(options = {}) {
         ['GET', /^\/api\/meta$/, async () => ({
             ok: true,
             app: config.appName,
+            temporaryGroups: true,
             tagline: config.tagline,
             // 页脚那行灰字就取自这两个字段。
             //
@@ -789,9 +791,9 @@ async function createServer(options = {}) {
         ['POST', /^\/api\/groups$/, async (req, res) => {
             const { user } = await requireUser(req);
             const body = await readBody(req, res);
-            const g = await store.createGroup(user.id, body.name);
+            const g = await store.createGroup(user.id, body.name, body.temporary);
             store.stats.bump(user.id, 'group_create');
-            return { code: g.code, name: g.name };
+            return { code: g.code, name: g.name, expiresAt: g.expiresAt };
         }],
 
         ['POST', /^\/api\/groups\/(\d{6}|\d{8})\/join$/, async (req, res, m) => {
@@ -1297,6 +1299,11 @@ async function createServer(options = {}) {
     }, 24 * 3600 * 1000);
     timer.unref();
 
+    const temporaryGroupsTimer = setInterval(() => {
+        store.expireTemporaryGroups().catch((e) => console.error('[temporary-groups]', e.message));
+    }, 60 * 1000);
+    temporaryGroupsTimer.unref();
+
     // 活跃度的「攒下的桶」定期落盘（10 秒一次，脏了才写）。
     // 和会话的 lastSeen 同一个节奏、同一个理由：请求路径上一个字节都不写
     const flushTimer = setInterval(() => {
@@ -1307,6 +1314,8 @@ async function createServer(options = {}) {
 
     // 关服前把还没落盘的写下去，免得下次启动读到偏旧的计数
     server.on('close', () => {
+        clearInterval(timer);
+        clearInterval(temporaryGroupsTimer);
         clearInterval(flushTimer);
         store.flushSessions('关服').catch(() => {});
         store.stats.flush('关服').catch(() => {});

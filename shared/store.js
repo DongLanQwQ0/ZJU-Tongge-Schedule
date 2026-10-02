@@ -19,6 +19,7 @@ const weeks = require('./weeks.js');
 
 const SESSION_TTL = 90 * 86400000;      // 会话 90 天
 const GROUP_TTL = 180 * 86400000;       // 群组 180 天不活动即清理
+const TEMPORARY_GROUP_TTL = 24 * 3600000; // 临时群固定存活 24 小时
 const DORMANT_DAYS = 30;                // 没传课表 + 这么多天没登录 = 待清理
 const MAX_MEMBERS = 200;
 const MAX_COURSES = 500;
@@ -264,7 +265,13 @@ function createStore(dataDir, options) {
 
     /** 业务读路径：读盘 + 解密 */
     async function readJson(file, fallback) {
-        return decodeFor(file, await readRaw(file, fallback));
+        const data = await readRaw(file, fallback);
+        if (inGroups(file) && temporaryGroupExpired(data)) return fallback();
+        return decodeFor(file, data);
+    }
+
+    function temporaryGroupExpired(group) {
+        return group && Number.isFinite(group.expiresAt) && group.expiresAt <= now();
     }
 
     /**
@@ -930,7 +937,8 @@ function createStore(dataDir, options) {
     // （老数据里的 codeRotatedFrom* 字段保留：resolveGroupFile 还要靠它读回老群。）
 
 
-    async function createGroup(creatorId, name) {
+    async function createGroup(creatorId, name, temporary = false) {
+        if (typeof temporary !== 'boolean') throw fail(400, '临时群标记必须是布尔值');
         const groupName = sanitizeGroupName(name);
         // 群码也要避开已有的票码：两者共用同一片数字空间，撞上了
         // 「拿票来入群」和「拿群码来入群」在日志里会长得一模一样
@@ -942,6 +950,7 @@ function createStore(dataDir, options) {
                 const existing = await readJson(groupFile(code), () => null);
                 if (existing) return null;                 // 撞码，换一个
                 used.add(code);
+                const createdAt = now();
                 const g = {
                     v: 2,
                     code,
@@ -949,9 +958,10 @@ function createStore(dataDir, options) {
                     creatorId,
                     // 默认保持老行为：谁拿到链接都能进
                     joinMode: 'open',
-                    createdAt: now(),
-                    updatedAt: now(),
-                    members: [{ userId: creatorId, joinedAt: now() }],
+                    createdAt,
+                    expiresAt: temporary ? createdAt + TEMPORARY_GROUP_TTL : null,
+                    updatedAt: createdAt,
+                    members: [{ userId: creatorId, joinedAt: createdAt }],
                     requests: [],
                     // 建群就带一条永久链接。群码只是地址、不是票（见 §3.1），
                     // 没有这枚票的话，成员打开群组页看到的是一张空卡片 ——
@@ -973,16 +983,15 @@ function createStore(dataDir, options) {
     /**
      * 邀请链接与「群」的关系，是本功能的核心约定，先讲清楚：
      *
-     *   g.code      —— 群的**永久地址**，也是文件名。永远有效，永远不变。
+     *   g.code      —— 群的稳定地址，也是文件名；群存续期间永远不变。
      *                  **它不是票**：拿它来入群一律 404（见 joinByInvite）。
      *                  它出现在每个成员都拿得到的响应里（前端要拿它寻址），
      *                  正因为不再是凭证，泄漏它才没有后果。
      *   g.invites[] —— 入群**唯一**的凭证。可以同时存在很多枚，
      *                  每枚各自带有效期（null = 永久），随时可以单独作废。
      *
-     * 为什么不把有效期加在 g.code 上：那样「过期」就等于这个群没了地址，
-     * 而群本身不该有寿命 —— 你问得对，群为什么要有有效期。
-     * 有寿命的只是发给别人的那张票。
+     * 地址的稳定性与群的寿命独立：临时群创建后 24 小时到期，活动不续期。
+     * 群寿命也独立于邀请票寿命：永久票只能在群存续期间使用。
      *
      * 为什么群码曾经**同时**是票（改版前发出去的链接用的就是它）：那是为了让
      * 老链接不失效。代价是它不可收回、不可过期 —— 谁拿到都能进，群主想收回
@@ -1602,10 +1611,8 @@ function createStore(dataDir, options) {
      * 界面上的权限全部以 isCreator 为准，所以改完这一个字段，改名 / 审批 /
      * 邀请码 / 移人 / 解散 / 退群 该藏的藏、该露的露，一行判断都不用新写。
      *
-     * 群码（g.code）也**不动**。它既是群主的永久码，也是群的永久邀请码
-     * （joinByInvite 特意保留了这条兼容），换掉它会把所有已发出去的链接一起废掉。
-     * 转让后老群主手里那条码仍然能拉人 —— 但普通成员本来就能分享有效邀请码，
-     * 他不比任何一个群友多出权限。真想切断旧码，新群主自己去「换一个新码」。
+     * 群码（g.code）保持稳定；它是地址，入群仍然需要有效邀请票。
+     * 转让不改变临时群到期时间，也不改变邀请票的各自寿命。
      *
      * @returns {Promise<object>} 转让后的群记录（creatorId 已是新群主）
      */
@@ -1692,6 +1699,7 @@ function createStore(dataDir, options) {
             name: g.name,
             creatorId: g.creatorId,
             createdAt: g.createdAt,
+            expiresAt: g.expiresAt,
             joinMode: settings.joinMode,
             isCreator: g.creatorId === viewerId,
             // 成员能不能拿到邀请码，由群主的开关说了算。关掉时**服务端就不下发** ——
@@ -1759,6 +1767,7 @@ function createStore(dataDir, options) {
                 // 印在卡片上的那一枚（没得印就是 null）
                 shareCode: share ? share.code : null,
                 pending: isPending,
+                expiresAt: g.expiresAt,
                 updatedAt: g.updatedAt
             });
         }
@@ -1820,21 +1829,39 @@ function createStore(dataDir, options) {
             sessionsDirty = false;
         }
 
-        await fsp.mkdir(GROUPS, { recursive: true });
-        const files = await fsp.readdir(GROUPS);
-        for (const f of files) {
-            if (!/^\d{6,8}\.json$/.test(f)) continue;
-            const p = path.join(GROUPS, f);
-            const g = await readJson(p, () => null);
-            if (g && now() - (g.updatedAt || g.createdAt || 0) > GROUP_TTL) {
-                await fsp.unlink(p).catch(() => {});
-                removed.groups++;
-            }
-        }
+        removed.groups = await removeExpiredGroups(true);
         // 活跃度桶也在这里修剪：清理是「启动一次 + 每天一次」，正好是桶要的节奏，
         // 不必为它单开一个定时器。修剪失败只记日志，不影响前两项
         removed.statDays = await stats.prune();
         return removed;
+    }
+
+    async function removeExpiredGroups(includeDormant) {
+        await fsp.mkdir(GROUPS, { recursive: true });
+        const files = await fsp.readdir(GROUPS);
+        let removed = 0;
+        const expired = (g) => g && (temporaryGroupExpired(g) ||
+            (includeDormant && now() - (g.updatedAt || g.createdAt || 0) > GROUP_TTL));
+        for (const f of files) {
+            if (!/^\d{6,8}\.json$/.test(f)) continue;
+            const file = path.join(GROUPS, f);
+            const group = await readRaw(file, () => null);
+            if (!expired(group)) continue;
+            await withLock(`group:${group.code}`, async () => {
+                if (!expired(await readRaw(file, () => null))) return;
+                try {
+                    await fsp.unlink(file);
+                    removed++;
+                } catch (e) {
+                    if (e.code !== 'ENOENT') throw e;
+                }
+            });
+        }
+        return removed;
+    }
+
+    async function expireTemporaryGroups() {
+        return removeExpiredGroups(false);
     }
 
     // ---------------------------------------------------------------- 管理
@@ -1959,6 +1986,7 @@ function createStore(dataDir, options) {
                 memberCount: g.members.length,
                 owner: owner ? owner.nickname : '（已注销）',
                 createdAt: g.createdAt || 0,
+                expiresAt: g.expiresAt,
                 updatedAt: g.updatedAt || 0,
                 joinMode: groupSettings(g).joinMode,
                 pending: Array.isArray(g.requests) ? g.requests.length : 0
@@ -2022,6 +2050,7 @@ function createStore(dataDir, options) {
         pendingPlaintext,
         migrateVault,
         cleanup,
+        expireTemporaryGroups,
         // 会话表的落盘（定时器与退出钩子用；读路径不经过它）
         flushSessions,
         // 账号

@@ -138,6 +138,7 @@
                 '<h2 style="font-size:16px;margin-bottom:10px"></h2>' +
                 '<p class="tiny" style="margin-bottom:10px"></p>' +
                 '<input class="input" maxlength="10">' +
+                (opts.checkbox ? '<label class="temporary-group-option"><input type="checkbox"><span></span></label>' : '') +
                 '<div class="row" style="margin-top:14px">' +
                 '<button class="btn secondary" data-x="cancel">取消</button>' +
                 '<button class="btn" data-x="ok">确定</button>' +
@@ -152,6 +153,12 @@
             input.maxLength = opts.maxlength || 20;
             if (opts.mono) input.classList.add('mono');
             if (opts.value) input.value = opts.value;
+            if (opts.checkbox) {
+                var checkbox = $('input[type=checkbox]', modal);
+                checkbox.disabled = !!opts.checkbox.disabled;
+                $('.temporary-group-option span', modal).textContent = opts.checkbox.label;
+                checkbox.addEventListener('change', function () { opts.checkbox.onChange(checkbox.checked); });
+            }
 
             function done(val) {
                 dismiss(modal);
@@ -471,6 +478,11 @@
         history.pushState({ dsh: id, d: navDepth }, '');
     }
 
+    function returnFromLocal() {
+        if (state.me) return goHome();
+        show('auth', { title: '同格' });
+    }
+
     /** 返回手势落下后，按那条历史记录把屏幕重新画出来 */
     function restoreScreen(id) {
         if (id === 'android-download') {
@@ -478,7 +490,7 @@
             return;
         }
         if (id === 'local') {
-            show('local', { title: '本地快速比对', back: goHome });
+            show('local', { title: '本地快速比对', back: returnFromLocal });
             initLocalOnce();
             return;
         }
@@ -1416,7 +1428,8 @@
                 (g.pending ? ' <span class="chip-lv nearby">等群主同意</span>' : '') + '</div>' +
                 '<div class="sub">' + (g.shareCode ? '邀请码 ' + esc(g.shareCode) + ' · ' : '') +
                 g.memberCount + ' 人' +
-                (g.isCreator ? ' · 你是群主' : '') + '</div></div>' +
+                (g.isCreator ? ' · 你是群主' : '') +
+                (g.expiresAt ? ' · 临时群组' : '') + '</div></div>' +
                 icon('chevron-right', 'chev') + '</button>';
         }).join('') + pagerHtml('home-groups', groupPage.page, groupPage.totalPages);
         $$('#home-groups .item').forEach(function (el) {
@@ -1617,15 +1630,23 @@
         });
 
         $('#btn-create-group').addEventListener('click', async function () {
+            var meta;
+            try { meta = await API.meta(); } catch (e) { toast(e.message, true); return; }
+            var temporary = false;
             var name = await askText({
                 title: '创建群组', placeholder: '群组名（选填）', maxlength: 20,
                 hint: '留空就叫「我的组团」。创建后会生成 8 位邀请码。',
                 allowEmpty: true,
-                emptyText: '用默认名'
+                emptyText: '用默认名',
+                checkbox: {
+                    label: meta.temporaryGroups === true ? '临时群组 · 24 小时后自动解散' : '临时群组 · 需先更新服务器',
+                    disabled: meta.temporaryGroups !== true,
+                    onChange: function (checked) { temporary = checked; }
+                }
             });
             if (name === null) return;
             try {
-                var g = await API.createGroup(name);
+                var g = await API.createGroup(name, temporary);
                 state.weekIndex = null;
                 toast('群组已创建，邀请码 ' + g.code);
                 await loadGroups();
@@ -1644,7 +1665,7 @@
         });
 
         $('#btn-logout').addEventListener('click', logout);
-        $('#btn-local').addEventListener('click', function () { show('local', { title: '本地快速比对', back: goHome }); initLocalOnce(); });
+        $('#btn-local').addEventListener('click', function () { show('local', { title: '本地快速比对', back: returnFromLocal }); initLocalOnce(); });
         $('#btn-android-download').addEventListener('click', function () {
             show('android-download', { title: '下载 APK', back: goHome });
         });
@@ -1885,7 +1906,8 @@
             var cacheKey = code + '|' + query.page + '|' + query.q + '|' + JSON.stringify(query.viewCounts) + '|' + JSON.stringify(query.viewRecency);
             var cached = state.memberCache[cacheKey];
             var detail;
-            if (cached && cached.data && Date.now() - cached.at < 15000) {
+            if (cached && cached.data && Date.now() - cached.at < 15000
+                    && (!cached.data.expiresAt || cached.data.expiresAt > Date.now())) {
                 detail = cached.data;
             } else if (cached && cached.promise) {
                 detail = await cached.promise;
@@ -1905,6 +1927,7 @@
 
     function returnToCachedGroup() {
         if (!state.group) return fallbackHome();
+        if (state.group.expiresAt && state.group.expiresAt <= Date.now()) return goHome();
         var y = state.groupScrollY || 0;
         show('group', { title: '群组', back: goHome, replace: true });
         renderGroup();
@@ -2075,6 +2098,8 @@
         var monday = win.baseMonday ? weeks.mondayOfWeek(win.baseMonday, state.weekIndex) : null;
 
         $('#group-name').firstChild.nodeValue = g.name;
+        $('#group-expiry').hidden = !g.expiresAt;
+        $('#group-expiry').textContent = g.expiresAt ? '临时群组 · ' + fmtTime(g.expiresAt) + ' 自动解散' : '';
         $('#btn-rename-group').hidden = !iAmOwner;
         // 转让：群主才有资格，而且群里得真有别人可转。
         // 没别人时藏掉 —— 留一颗点了必然报错的按钮等于设陷阱，和下面 #btn-group-leave 同理
@@ -2120,7 +2145,9 @@
                 urlEl.hidden = false;
                 renderQr(disp.code);
                 // 讲清楚这枚码还能用多久（没有「群主自己的永久码」这种东西了）
-                if (disp.invite.expiresAt == null) {
+                if (g.expiresAt && (disp.invite.expiresAt == null || disp.invite.expiresAt > g.expiresAt)) {
+                    noteEl.textContent = '这条链接在 ' + fmtTime(g.expiresAt) + ' 随群组解散失效。';
+                } else if (disp.invite.expiresAt == null) {
                     noteEl.textContent = '这条链接永久有效。';
                 } else {
                     noteEl.textContent = '这条链接' + inviteStateText(disp.invite) + '。';
@@ -2543,7 +2570,7 @@
      * 保持 async 是因为调用点用了 .then()，改同步就得连带改调用方。
      */
     async function joinUrl(code) {
-        return new URL('./?code=' + encodeURIComponent(code), document.baseURI).href;
+        return new URL('./?code=' + encodeURIComponent(code), window.__tonggeServerBase || document.baseURI).href;
     }
 
     // -------------------------------------------------------- 邀请链接（可多枚、可过期）
@@ -2563,6 +2590,9 @@
     function inviteStateText(inv) {
         if (inv.revoked) return '已作废';
         if (inv.expired) return '已过期';
+        if (state.group && state.group.expiresAt
+                && (inv.expiresAt == null || inv.expiresAt > state.group.expiresAt))
+            return fmtTime(state.group.expiresAt) + ' 随群组解散失效';
         if (inv.expiresAt == null) return '永久有效';
         return fmtRemaining(inv.remainingMs) + '（' + fmtTime(inv.expiresAt) + ' 到期）';
     }
@@ -3367,21 +3397,26 @@
 
     /** 恢复登录状态 / 处理邀请链接 */
     async function restoreSession() {
-        if (!API.getToken()) {
-            show('auth', { title: '同格', replace: true });
-            return;
-        }
+        // Keep offline tools accessible while a saved login is being checked.
+        show('auth', { title: '同格', replace: true });
+        var restoringToken = API.getToken();
+        if (!restoringToken) return;
         try {
-            state.me = await API.me();
+            var me = await API.me();
+            if (API.getToken() !== restoringToken) return;
+            state.me = me;
+            if (state.screen !== 'auth') return;
             await goHome({ replace: true });
+            if (state.screen !== 'home') return;
             if (state.pendingCode) {
                 var c = state.pendingCode;
                 state.pendingCode = null;
                 await joinByCode(c);
             }
         } catch (e) {
+            if (API.getToken() && API.getToken() !== restoringToken) return;
             if (e.status !== 401 && e.status !== 0) toast(e.message, true);
-            show('auth', { title: '同格', replace: true });
+            if (state.screen === 'auth') show('auth', { title: '同格', replace: true });
         }
     }
 
@@ -3410,7 +3445,7 @@
         API.onUnauthorized(function () {
             state.me = null;
             toast('登录状态过期了，请重新登录', true);
-            show('auth', { title: '同格', replace: true });
+            if (state.screen !== 'local') show('auth', { title: '同格', replace: true });
         });
 
         initMascot();
@@ -3579,7 +3614,7 @@
      * 注意 share() 必须在点击手势里同步调用，前面不能 await 任何东西，否则会被拒。
      */
     async function shareSite() {
-        var url = new URL('./', document.baseURI).href;
+        var url = new URL('./', window.__tonggeServerBase || document.baseURI).href;
         var cfg = (window.DSH && window.DSH.config) || {};
         var title = cfg.appName ? cfg.appName + ' · ' + cfg.tagline : '同格';
         var desc = cfg.desc || '';
