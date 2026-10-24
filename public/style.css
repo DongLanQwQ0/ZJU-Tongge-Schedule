@@ -1,5 +1,19 @@
 /* 同格 —— 移动优先样式 */
 
+.migration-notice {
+    margin: max(16px, env(safe-area-inset-top)) auto 16px;
+    width: calc(100% - 40px);
+    max-width: 600px;
+    padding: 16px;
+    border-left: 3px solid var(--blue);
+    background: var(--card-solid);
+    color: var(--text);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+.migration-notice a { color: var(--blue); text-decoration: underline; }
+.migration-notice p { margin-top: 8px; }
+
 /*
  * 颜色全部走变量，暗色模式只换这一层。
  * 主题写在 <html data-theme="..."> 上，由 index.html 里的内联脚本在首屏前定好，

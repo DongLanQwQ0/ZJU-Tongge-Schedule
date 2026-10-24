@@ -60,30 +60,42 @@
      * @throws {Error & {status:number}} status 为 0 表示网络不可达
      */
     async function request(path, method, body) {
+        var requestUrl = new URL(path, serverBase);
+        if (requestUrl.origin === 'https://111.228.3.50' && requestUrl.pathname.startsWith('/tongge/api/')
+                && Date.now() >= Date.parse('2027-01-24T00:00:00+08:00')) {
+            notifyConnectionFailure();
+            var retired = new Error('旧服务器已停用，正在切换新地址，请重新登录');
+            retired.status = 0;
+            throw retired;
+        }
         method = method || 'GET';
         var headers = {};
         var requestToken = token;
         if (requestToken) headers.Authorization = 'Bearer ' + requestToken;
         if (body !== undefined) headers['Content-Type'] = 'application/json';
 
-        var res;
+        var res, text;
+        var controller = new AbortController();
+        var timeout = setTimeout(function () { controller.abort(); }, 8000);
         try {
-            res = await fetch(new URL(path, serverBase).href, {
+            res = await fetch(requestUrl.href, {
                 method: method,
                 headers: headers,
-                body: body === undefined ? undefined : JSON.stringify(body)
+                body: body === undefined ? undefined : JSON.stringify(body),
+                signal: controller.signal
             });
+            text = await res.text();
         } catch (e) {
+            notifyConnectionFailure();
             var netErr = new Error('连不上服务器，检查网络连接');
             netErr.status = 0;
             throw netErr;
-        }
-
-        var text = await res.text();
+        } finally { clearTimeout(timeout); }
         var data = null;
         try { data = text ? JSON.parse(text) : null; } catch (e) { data = { error: text }; }
 
         if (!res.ok) {
+            if (res.status >= 500) notifyConnectionFailure();
             var err = new Error((data && data.error) || ('请求失败（' + res.status + '）'));
             err.status = res.status;
             // 服务端说「这次开始要验证码了」，把标志带上去给 app.js 显示输入框
@@ -101,6 +113,15 @@
             throw err;
         }
         return data;
+    }
+
+    // Do not replay a failed write: it might already have committed on the original server.
+    function notifyConnectionFailure() {
+        if (window.__tonggeServerBase) {
+            window.location.href = 'tongge://reconnect';
+        } else if (window.TonggeMigration) {
+            window.TonggeMigration.onFailure();
+        }
     }
 
     window.Store = Store;

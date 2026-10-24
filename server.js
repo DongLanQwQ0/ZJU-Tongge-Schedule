@@ -14,6 +14,7 @@
 'use strict';
 
 const http = require('node:http');
+const https = require('node:https');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
@@ -29,6 +30,30 @@ const PUBLIC = path.join(__dirname, 'public');
 const SHARED = path.join(__dirname, 'shared');
 const DATA = path.join(__dirname, 'data');
 const MAX_BODY = 1024 * 1024;          // 1 MB
+const MIGRATION_CUTOVER = Date.parse('2027-01-24T00:00:00+08:00');
+
+// Fixed, credential-free health probe. No user-supplied URL or redirects.
+function oldServerAvailable() {
+    return new Promise((resolve) => {
+        let finished = false;
+        const finish = value => { if (!finished) { finished = true; clearTimeout(timer); resolve(value); } };
+        const request = https.get('https://111.228.3.50/tongge/api/meta', response => {
+            let body = '';
+            response.setEncoding('utf8');
+            response.on('data', chunk => {
+                body += chunk;
+                if (body.length > 8192) { finish(false); request.destroy(); }
+            });
+            response.on('end', () => {
+                try { finish(response.statusCode === 200 && JSON.parse(body).ok === true); }
+                catch (_) { finish(false); }
+            });
+            response.on('error', () => finish(false));
+        });
+        const timer = setTimeout(() => { finish(false); request.destroy(); }, 2500);
+        request.on('error', () => finish(false));
+    });
+}
 /**
  * 超限后还愿意读掉多少字节。
  *
@@ -417,6 +442,19 @@ function resolveVault(options) {
 }
 
 async function createServer(options = {}) {
+    const migrationNow = options.migrationNow || Date.now;
+    let migrationProbe;
+    let migrationExpires = 0;
+    async function migrationStatus() {
+        if (migrationNow() >= MIGRATION_CUTOVER) return { oldAvailable: false };
+        if (!migrationProbe || migrationNow() >= migrationExpires) {
+            migrationExpires = migrationNow() + 30000;
+            migrationProbe = Promise.resolve().then(options.migrationHealth || oldServerAvailable)
+                .then(oldAvailable => ({ oldAvailable: oldAvailable === true }))
+                .catch(() => ({ oldAvailable: false }));
+        }
+        return migrationProbe;
+    }
     const port = options.port || Number(process.env.PORT) || 3000;
     const vault = resolveVault(options);
 
@@ -1272,6 +1310,7 @@ async function createServer(options = {}) {
             return sendError(res, e.status || 429, e.message);
         }
 
+        if (pathname === '/api/migration' && req.method === 'GET') return send(res, 200, await migrationStatus());
         for (const [method, pattern, handler] of routes) {
             if (req.method !== method) continue;
             const m = pattern.exec(pathname);
