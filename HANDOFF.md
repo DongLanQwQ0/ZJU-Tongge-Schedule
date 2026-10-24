@@ -8,4 +8,5 @@
 - 验收：日期边界、官方/自定义地址、主备可用组合、失败即时检查、不重放写请求、登录隔离、嵌入资源、构建/Lint、原签名、独立审核、两个远程分支及 Release 资产一致。
 - 工具约束：FastCtx 未提供，PowerShell 7；子代理工具无 agent_type 字段，审核仅约束为只读 check，不覆盖模型。仓库无两份 UI 规范文档，不重设现有视觉。
 - 当前状态：实现、Release 构建、Lint、API36实际WebView交互、深浅主题与独立审核已通过；有效范围见 `docs/MIGRATION-VERIFICATION.md`。APK 为 1.0.5 / code 6，保留 1.0.4 签名。
-- 唯一下一步：提交并推送两个仓库，创建 Android v1.0.5 正式 Release，上传固定名称和版本名称 APK，再确认远程分支及公开下载资产。
+- 发布状态：两个仓库 `main` 已推送（Web 功能提交 `fd274c7`，Android `b48d76f`）；Android `v1.0.5` 正式 Release 已公开，版本 APK 与固定名称 APK 均上传完成，`releases/latest` 已更新。
+- 唯一下一步：服务器维护者部署 Web 候选及迁移数据。新地址尚未部署；本轮源码与 APK 发布已完成，不代表服务端上线。旧地址彻底停机后仍需独立跳转入口或使用新收藏/APK。

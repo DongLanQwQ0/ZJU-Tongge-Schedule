@@ -11,7 +11,7 @@ Android 本地比对进行时暂缓页面重载，保留当前结果；真实旧
 - Web `npm test`：375 项通过，覆盖此前固定候选。后续健康探测、截止请求保护与静态入口修复，补跑 `node --test test/migration.test.js test/server.test.js`：57 项通过；最终迁移专项 14 项通过。
 - Android `node --test test/runtime.test.cjs`：7 项通过。
 - 纯 Java `ServerAddressCheck`、`MigrationPolicyCheck`、`ReleaseVersionCheck` 通过：覆盖主备全部可用组合、恢复、失败不永久切换、截止边界、官方 HTTP 限定与自定义地址。
-- `:app:assembleRelease :app:lintRelease :app:assembleReleaseAndroidTest --offline` 通过。Lint 无错误，有 10 项既有类别警告（SDK/依赖、WebView、图标等），未扩大修改范围。
+- `:app:assembleRelease :app:lintRelease :app:assembleReleaseAndroidTest --offline` 通过。Lint 无错误，有 10 项警告（SDK/依赖、WebView、图标等），未扩大修改范围。
 - API 36 模拟器安装实际 Release APK，执行 `adb shell am instrument -w com.tongge.app.test/com.tongge.app.MigrationInstrumentation` 通过：HTTPS/HTTP 本地资源、限定主机明文策略、503 重连、本地比对及原生选服期间保留结果。
 - Web 实际 Chromium：320px / 22.5px 字体、深浅主题，迁移提示完整，下载与新址链接正确，无横向溢出。测试预览只向迁移函数传入官方主机名，其余 HTML/CSS/JS 使用候选源码。
 - Android 实际 WebView：320dp / 150% 字体、深浅主题。截图仅保存压缩副本供审查；窄视口右侧灰区属于测试容器。
@@ -19,6 +19,12 @@ Android 本地比对进行时暂缓页面重载，保留当前结果；真实旧
 - 最终 APK：`com.tongge.app`，versionCode 6 / versionName 1.0.5；沿用 1.0.4 签名。28 个 APK 内置网页资产与源快照直接逐项比较一致；模拟器覆盖安装成功。
 
 临时日志与压缩渲染位于 `F:\Android\temp\tongge-*`；源码检查与渲染证据只适用于本次候选，不代表新服务器已部署。
+
+## 已发布产物
+
+- Web 功能提交 `fd274c7`，Android 功能提交及 v1.0.5 标签对应提交 `b48d76f`，均已推送各自 `main`。
+- [Android 1.0.5 正式 Release](https://github.com/DongLanQwQ0/ZJU-Tongge-Schedule-Android/releases/tag/v1.0.5) 已公开，`releases/latest` 返回 v1.0.5。
+- `Tongge-1.0.5.apk` 与 `Tongge.apk` 均为 7,074,127 字节，上传状态 `uploaded`，与本地发布安装包长度一致；签名与 1.0.4 相同。两个名字指向同一安装包。
 
 ## 上线条件
 
